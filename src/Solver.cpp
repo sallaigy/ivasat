@@ -7,58 +7,11 @@ using namespace ivasat;
 namespace
 {
 
-enum class Tribool
-{
-  True,
-  False,
-  Unknown
-};
-
-Tribool operator|(Tribool left, Tribool right)
-{
-  using enum Tribool;
-  if (left == True || right == True) {
-    return True;
-  }
-
-  if (left == Unknown || right == Unknown) {
-    return Unknown;
-  }
-
-  return False;
-}
-
-Tribool operator&(Tribool left, Tribool right)
-{
-  using enum Tribool;
-  if (left == False || right == False) {
-    return False;
-  }
-
-  if (left == Unknown || right == Unknown) {
-    return Unknown;
-  }
-
-  return False;
-}
-
-Tribool operator~(Tribool value)
-{
-  switch (value) {
-    case Tribool::True:
-      return Tribool::False;
-    case Tribool::False:
-      return Tribool::True;
-    default:
-      return Tribool::Unknown;
-  }
-}
-
 class Solver
 {
 public:
   explicit Solver(Instance& instance)
-    : mInstance(instance), mVariables(instance.numVariables() + 1, Tribool::Unknown)
+    : mInstance(instance), mVariables(instance.numVariables() + 1, false)
   {}
 
   Status check();
@@ -72,7 +25,7 @@ private:
   // Fields
   //==----------------------------------------------------------------------==//
   Instance& mInstance;
-  std::vector<Tribool> mVariables;
+  std::vector<bool> mVariables;
   int mCurrentIndex = 0;
 };
 
@@ -103,33 +56,38 @@ Status Instance::check()
 bool Solver::checkClause(size_t clauseIdx)
 {
   auto& clause = mInstance.clauses()[clauseIdx];
-  Tribool result = Tribool::False;
+  bool hasUnknown = false;
 
   for (int varIdx : clause) {
     bool shouldNegate;
-    int variableIndex;
+    int finalIndex;
 
     if (varIdx < 0) {
       shouldNegate = true;
-      variableIndex = -varIdx;
+      finalIndex = -varIdx;
     } else {
       shouldNegate = false;
-      variableIndex = varIdx;
+      finalIndex = varIdx;
     }
 
-    Tribool variableValue;
-    if (variableIndex > mCurrentIndex) {
-      variableValue = Tribool::Unknown;
-    } else if (shouldNegate) {
-      variableValue = ~(mVariables[variableIndex]);
+    if (finalIndex > mCurrentIndex) {
+      hasUnknown = true;
+      continue;
+    }
+
+    bool variableValue;
+    if (shouldNegate) {
+      variableValue = !(mVariables[finalIndex]);
     } else {
-      variableValue = mVariables[variableIndex];
+      variableValue = mVariables[finalIndex];
     }
 
-    result = result | variableValue;
+    if (variableValue == true) {
+      return true;
+    }
   }
 
-  return result != Tribool::False;
+  return hasUnknown;
 }
 
 bool Solver::isValid()
@@ -146,8 +104,8 @@ bool Solver::isValid()
 Status Solver::check()
 {
   // Start search
-  std::stack<std::pair<int, Tribool>> wl;
-  wl.emplace(1, Tribool::True);
+  std::stack<std::pair<int, bool>> wl;
+  wl.emplace(1, true);
 
   while (!wl.empty()) {
     auto [currentIndex, currentValue] = wl.top();
@@ -165,14 +123,14 @@ Status Solver::check()
 
     if (isValid()) {
       int newState = currentIndex + 1;
-      wl.emplace(newState, Tribool::True);
-    } else if (currentValue == Tribool::True) {
+      wl.emplace(newState, true);
+    } else if (currentValue == true) {
       // Try again with setting the current index to false
-      wl.emplace(currentIndex, Tribool::False);
+      wl.emplace(currentIndex, false);
     } else {
       // We will have to backtrack to the closest non-false state
       int curr = prevIndex;
-      while (curr > 0 && mVariables[curr] == Tribool::False) {
+      while (curr > 0 && mVariables[curr] == false) {
         --curr;
       }
 
@@ -182,7 +140,7 @@ Status Solver::check()
       }
 
       mCurrentIndex = curr - 1;
-      wl.emplace(curr, Tribool::False);
+      wl.emplace(curr, false);
     }
   }
 
