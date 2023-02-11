@@ -42,10 +42,12 @@ public:
 private:
   unsigned mNumVariables;
   std::vector<std::vector<int>> mClauses;
-  Status mStatus = Status::Unknown;
+  std::vector<bool> mModel;
 };
 
 std::ostream& operator<<(std::ostream& os, Status status);
+
+std::unique_ptr<Instance> parseDimacs(std::istream& input);
 
 } // namespace ivasat
 

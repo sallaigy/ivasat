@@ -8,5 +8,4 @@ include_directories(include)
 add_subdirectory(src)
 add_subdirectory(unittests)
 
-add_executable(iva_sat main.cpp src/Solver.cpp)
 

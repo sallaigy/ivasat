@@ -104,3 +104,18 @@ TEST(SolverTest, complex_sat)
 
   EXPECT_EQ(status, Status::Sat);
 }
+
+TEST(SolverTest, learning_clauses)
+{
+  Instance inst(7, {
+    {-1, 2},
+    {-3, 4},
+    {-6, -5, -2},
+    {-5, 6},
+    {5, 7},
+    {-1, 5, -7}
+  });
+  auto status = inst.check();
+
+  EXPECT_EQ(status, Status::Sat);
+}
