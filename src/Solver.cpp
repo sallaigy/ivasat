@@ -2,6 +2,7 @@
 
 #include <stack>
 #include <unordered_map>
+#include <set>
 #include <algorithm>
 #include <iostream>
 #include <optional>
@@ -42,25 +43,55 @@ public:
     return mStats;
   }
 
-  void learnFact(int variableIndex, bool value)
+  void assignUnitClause(int variableIndex, bool value)
   {
-    assert(!mLearnedFacts.empty());
-    mLearnedFacts.back()[variableIndex] = value;
+    assert(!mAssignments.empty());
+    mAssignments.back()[variableIndex] = value;
+  }
+
+  bool propagateUnitClause(int variableIndex, bool value)
+  {
+    this->assignUnitClause(variableIndex, value);
+
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (size_t i = 0; i < mClauses.size(); ++i) {
+        auto clauseStatus = checkClause(i);
+        if (clauseStatus == ClauseStatus::Conflicting) {
+          // The propagation set forward by the last decision led to a conflict, so we can learn that the last set
+          // literal cannot have its current value in any interpretation
+          return false;
+        }
+
+        if (clauseStatus == ClauseStatus::Unit) {
+          // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
+          int lastIndex = unassignedLiteralIndex(i);
+          bool shouldNegate = lastIndex < 0;
+          int finalIndex = shouldNegate ? -lastIndex : lastIndex;
+
+          this->assignUnitClause(finalIndex, !shouldNegate);
+          changed = true;
+        }
+      }
+    }
+
+    return true;
   }
 
   void pushState()
   {
-    mLearnedFacts.emplace_back();
+    mAssignments.emplace_back();
   }
 
   void popState()
   {
-    mLearnedFacts.pop_back();
+    mAssignments.pop_back();
   }
 
-  std::optional<bool> getLearnedFact(int variableIndex)
+  std::optional<bool> getAssignment(int variableIndex)
   {
-    for (auto it = mLearnedFacts.rbegin(), ie = mLearnedFacts.rend(); it != ie; ++it) {
+    for (auto it = mAssignments.rbegin(), ie = mAssignments.rend(); it != ie; ++it) {
       auto result = it->find(variableIndex);
       if (result != it->end()) {
         return std::make_optional(result->second);
@@ -70,8 +101,30 @@ public:
     return std::nullopt;
   }
 
+  int unassignedLiteralIndex(size_t clauseIdx)
+  {
+    for (int literal : mClauses[clauseIdx]) {
+      int finalIdx = literal < 0 ? -literal : literal;
+      if (finalIdx > mCurrentIndex && !getAssignment(finalIdx).has_value()) {
+        return literal;
+      }
+    }
+
+    assert(false && "Should be unreachable!");
+    return 0;
+  }
+
 private:
   bool isValid();
+
+  bool isValidChoice(size_t index, bool value)
+  {
+    if (auto learnedFact = getAssignment(index); learnedFact && *learnedFact != value) {
+      return false;
+    }
+
+    return !mFailedLiterals.contains({index, value});
+  }
 
   ClauseStatus checkClause(size_t clauseIdx);
 
@@ -79,7 +132,8 @@ private:
   //==----------------------------------------------------------------------==//
   std::vector<bool> mVariables;
   std::vector<std::vector<int>> mClauses;
-  std::vector<std::unordered_map<int, bool>> mLearnedFacts;
+  std::vector<std::unordered_map<int, bool>> mAssignments;
+  std::set<std::pair<int, bool>> mFailedLiterals;
 
   std::vector<int> mReorderedVariables;
   int mCurrentIndex = 0;
@@ -124,9 +178,7 @@ Solver::ClauseStatus Solver::checkClause(size_t clauseIdx)
 
   ClauseStatus status = ClauseStatus::Conflicting;
 
-  for (size_t i = 0; i < clause.size(); ++i) {
-    int varIdx = clause[i];
-
+  for (int varIdx : clause) {
     bool shouldNegate;
     int finalIndex;
 
@@ -140,12 +192,13 @@ Solver::ClauseStatus Solver::checkClause(size_t clauseIdx)
 
     bool variableValue;
     if (finalIndex > mCurrentIndex) {
-      if (auto learnedFact = getLearnedFact(finalIndex); learnedFact) {
+      if (auto learnedFact = getAssignment(finalIndex); learnedFact) {
         variableValue = shouldNegate != *learnedFact;
-      } else if (i == clause.size() - 1 && status != ClauseStatus::Unresolved) {
-        return ClauseStatus::Unit;
-      } else {
+      } else if (status == ClauseStatus::Unit) {
         status = ClauseStatus::Unresolved;
+        continue;
+      } else {
+        status = ClauseStatus::Unit;
         continue;
       }
     } else {
@@ -175,11 +228,14 @@ bool Solver::isValid()
 
     if (clauseStatus == ClauseStatus::Unit) {
       // The clause is not satisfied but the last literal is unassigned, so we can propagate its value
-      int lastIndex = mClauses[i].back();
+      int lastIndex = unassignedLiteralIndex(i);
       bool shouldNegate = lastIndex < 0;
       int variableIndex = shouldNegate ? -lastIndex : lastIndex;
 
-      this->learnFact(variableIndex, !shouldNegate);
+      bool sucessfulPropagation = this->propagateUnitClause(variableIndex, !shouldNegate);
+      if (!sucessfulPropagation) {
+        return false;
+      }
     }
   }
 
@@ -188,9 +244,6 @@ bool Solver::isValid()
 
 Status Solver::check()
 {
-  // Set-up
-  this->pushState();
-
   // Do some pre-processing: order variables by usage
   std::vector<int> variableUsage(mVariables.size(), 0);
   for (const auto& clause : mClauses) {
@@ -209,6 +262,10 @@ Status Solver::check()
 
   // Order clauses by size
   std::ranges::sort(mClauses, [](auto& l, auto& r) {
+    if (l.size() < r.size()) {
+      return true;
+    }
+
     return std::ranges::lexicographical_compare(l, r, [](int leftVal, int rightVal) {
       return std::abs(leftVal) < std::abs(rightVal);
     });
@@ -227,22 +284,39 @@ Status Solver::check()
     }
 
     // Check if the current state is okay
-    int prevIndex = mCurrentIndex;
+    bool shouldBacktrack = false;
+
     mVariables[currentIndex] = currentValue;
     mCurrentIndex = currentIndex;
 
     this->pushState();
     if (isValid()) {
       int newState = currentIndex + 1;
-      nextState = {newState, true};
+
+      if (isValidChoice(newState, true)) {
+        nextState = {newState, true};
+      } else if (isValidChoice(newState, false)) {
+        nextState = {newState, false};
+      } else {
+        // There is no valid choice for this literal
+        this->popState();
+        shouldBacktrack = true;
+      }
     } else if (currentValue == true) {
       this->popState();
       // Try again with setting the current index to false
       nextState = {currentIndex, false};
     } else {
+      this->popState();
+      shouldBacktrack = true;
+    }
+
+    assert((nextState != std::make_pair(currentIndex, currentValue)) || shouldBacktrack);
+
+    if (shouldBacktrack) {
       // We will have to backtrack to the closest non-false state
-      int curr = prevIndex;
-      while (curr > 0 && mVariables[curr] == false) {
+      int curr = mCurrentIndex;
+      while (curr > 0 && (mVariables[curr] == false || !isValidChoice(curr, false))) {
         --curr;
         this->popState();
       }
@@ -256,8 +330,6 @@ Status Solver::check()
       nextState = {curr, false};
     }
   }
-
-  return Status::Unknown;
 }
 
 std::vector<bool> Solver::model() const
