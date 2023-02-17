@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <sstream>
+
 using namespace ivasat;
 
 TEST(SolverTest, smoke_test_simple_or)
@@ -58,7 +60,6 @@ TEST(SolverTest, negated_first_variable)
 
 TEST(SolverTest, negated_second_variable)
 {
-  // (~x) AND (y)
   Instance inst(3, {
     {1, 2, 3},
     {1, 2, -3},
@@ -216,6 +217,21 @@ TEST(SolverTest, wrong_unsat_3)
     {-1, -11},
   });
   auto status = inst.check();
+
+  EXPECT_EQ(status, Status::Sat);
+}
+
+TEST(SolverTest, wrong_unsat_4)
+{
+  std::istringstream input(R"(
+p cnf 7 4
+3 -5 7 0
+-3 6 0
+4 0
+-4 -6 0
+)");
+  auto inst = parseDimacs(input);
+  auto status = inst->check();
 
   EXPECT_EQ(status, Status::Sat);
 }

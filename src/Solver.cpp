@@ -10,7 +10,7 @@
 
 using namespace ivasat;
 
-namespace
+namespace ivasat
 {
 
 struct Statistics
@@ -19,6 +19,51 @@ struct Statistics
   unsigned checkedFullCombinations = 0;
 };
 
+enum class Tribool
+{
+  False,
+  True,
+  Unknown
+};
+
+Tribool operator&(Tribool left, Tribool right)
+{
+  if (left == Tribool::False || right == Tribool::False) {
+    return Tribool::False;
+  }
+
+  if (left == Tribool::Unknown || right == Tribool::Unknown) {
+    return Tribool::Unknown;
+  }
+
+  return Tribool::True;
+}
+
+Tribool operator|(Tribool left, Tribool right)
+{
+  if (left == Tribool::True || right == Tribool::True) {
+    return Tribool::True;
+  }
+
+  if (left == Tribool::Unknown || right == Tribool::Unknown) {
+    return Tribool::Unknown;
+  }
+
+  return Tribool::False;
+}
+
+Tribool operator~(Tribool value)
+{
+  if (value == Tribool::True) {
+    return Tribool::False;
+  }
+
+  if (value == Tribool::False) {
+    return Tribool::True;
+  }
+
+  return Tribool::Unknown;
+}
 
 class Solver
 {
@@ -29,9 +74,10 @@ class Solver
     Unit,
     Unresolved
   };
+
 public:
   explicit Solver(const Instance& instance)
-    : mVariables(instance.numVariables() + 1, false), mClauses(instance.clauses())
+    : mVariableState(instance.numVariables() + 1, Tribool::Unknown), mClauses(instance.clauses())
   {}
 
   Status check();
@@ -45,8 +91,8 @@ public:
 
   void assignUnitClause(int variableIndex, bool value)
   {
-    assert(!mAssignments.empty());
-    mAssignments.back()[variableIndex] = value;
+    assert(!mPropagations.empty());
+    mPropagations.back()[variableIndex] = value;
   }
 
   bool propagateUnitClause(int variableIndex, bool value)
@@ -81,17 +127,17 @@ public:
 
   void pushState()
   {
-    mAssignments.emplace_back();
+    mPropagations.emplace_back();
   }
 
   void popState()
   {
-    mAssignments.pop_back();
+    mPropagations.pop_back();
   }
 
   std::optional<bool> getAssignment(int variableIndex)
   {
-    for (auto it = mAssignments.rbegin(), ie = mAssignments.rend(); it != ie; ++it) {
+    for (auto it = mPropagations.rbegin(), ie = mPropagations.rend(); it != ie; ++it) {
       auto result = it->find(variableIndex);
       if (result != it->end()) {
         return std::make_optional(result->second);
@@ -105,7 +151,8 @@ public:
   {
     for (int literal : mClauses[clauseIdx]) {
       int finalIdx = literal < 0 ? -literal : literal;
-      if (finalIdx > mCurrentIndex && !getAssignment(finalIdx).has_value()) {
+      auto currentValue = mVariableState[finalIdx];
+      if (currentValue == Tribool::Unknown && !getAssignment(finalIdx).has_value()) {
         return literal;
       }
     }
@@ -117,26 +164,25 @@ public:
 private:
   bool isValid();
 
-  bool isValidChoice(size_t index, bool value)
+  bool isValidChoice(int index, bool value)
   {
     if (auto learnedFact = getAssignment(index); learnedFact && *learnedFact != value) {
       return false;
     }
 
-    return !mFailedLiterals.contains({index, value});
+    return true;
   }
 
   ClauseStatus checkClause(size_t clauseIdx);
 
   // Fields
   //==----------------------------------------------------------------------==//
-  std::vector<bool> mVariables;
+  std::vector<Tribool> mVariableState;
   std::vector<std::vector<int>> mClauses;
-  std::vector<std::unordered_map<int, bool>> mAssignments;
-  std::set<std::pair<int, bool>> mFailedLiterals;
+  std::vector<std::unordered_map<int, bool>> mPropagations;
+  std::vector<size_t> mPropagationIndices;
 
-  std::vector<int> mReorderedVariables;
-  int mCurrentIndex = 0;
+  int mDecisionLevel = 0;
   Statistics mStats;
 };
 
@@ -190,11 +236,12 @@ Solver::ClauseStatus Solver::checkClause(size_t clauseIdx)
       finalIndex = varIdx;
     }
 
-    bool variableValue;
-    if (finalIndex > mCurrentIndex) {
+    Tribool variableValue = Tribool::Unknown;
+    if (mVariableState[finalIndex] == Tribool::Unknown) {
       if (auto learnedFact = getAssignment(finalIndex); learnedFact) {
-        variableValue = shouldNegate != *learnedFact;
-      } else if (status == ClauseStatus::Unit) {
+        variableValue = *learnedFact ? Tribool::True : Tribool::False;
+        variableValue = shouldNegate ? ~variableValue : variableValue;
+      } else if (status == ClauseStatus::Unit || status == ClauseStatus::Unresolved) {
         status = ClauseStatus::Unresolved;
         continue;
       } else {
@@ -202,10 +249,11 @@ Solver::ClauseStatus Solver::checkClause(size_t clauseIdx)
         continue;
       }
     } else {
-      variableValue = shouldNegate != (mVariables[finalIndex]);
+      variableValue = mVariableState[finalIndex];
+      variableValue = shouldNegate ? ~variableValue : variableValue;
     }
 
-    if (variableValue == true) {
+    if (variableValue == Tribool::True) {
       return ClauseStatus::Satisfied;
     }
   }
@@ -216,7 +264,7 @@ Solver::ClauseStatus Solver::checkClause(size_t clauseIdx)
 bool Solver::isValid()
 {
   mStats.checkedStates++;
-  if (mCurrentIndex == mVariables.size() - 1) {
+  if (mDecisionLevel == mVariableState.size() - 1) {
     mStats.checkedFullCombinations++;
   }
 
@@ -245,7 +293,7 @@ bool Solver::isValid()
 Status Solver::check()
 {
   // Do some pre-processing: order variables by usage
-  std::vector<int> variableUsage(mVariables.size(), 0);
+  std::vector<int> variableUsage(mVariableState.size(), 0);
   for (const auto& clause : mClauses) {
     for (int literal : clause) {
       int index = literal < 0 ? -literal : literal;
@@ -272,40 +320,40 @@ Status Solver::check()
   });
 
   // Start search
-  std::pair<int, bool> nextState = {1, true};
+  std::pair<int, Tribool> nextState = {1, Tribool::True};
   this->pushState();
 
   while (true) {
     auto [currentIndex, currentValue] = nextState;
 
     // Is this a complete state?
-    if (currentIndex == mVariables.size()) {
+    if (currentIndex == mVariableState.size()) {
       return Status::Sat;
     }
 
     // Check if the current state is okay
     bool shouldBacktrack = false;
 
-    mVariables[currentIndex] = currentValue;
-    mCurrentIndex = currentIndex;
+    mVariableState[currentIndex] = currentValue;
+    mDecisionLevel = currentIndex;
 
     this->pushState();
     if (isValid()) {
       int newState = currentIndex + 1;
 
       if (isValidChoice(newState, true)) {
-        nextState = {newState, true};
+        nextState = {newState, Tribool::True};
       } else if (isValidChoice(newState, false)) {
-        nextState = {newState, false};
+        nextState = {newState, Tribool::False};
       } else {
         // There is no valid choice for this literal
         this->popState();
         shouldBacktrack = true;
       }
-    } else if (currentValue == true) {
+    } else if (currentValue == Tribool::True) {
       this->popState();
       // Try again with setting the current index to false
-      nextState = {currentIndex, false};
+      nextState = {currentIndex, Tribool::False};
     } else {
       this->popState();
       shouldBacktrack = true;
@@ -315,8 +363,9 @@ Status Solver::check()
 
     if (shouldBacktrack) {
       // We will have to backtrack to the closest non-false state
-      int curr = mCurrentIndex;
-      while (curr > 0 && (mVariables[curr] == false || !isValidChoice(curr, false))) {
+      int curr = mDecisionLevel;
+      while (curr > 0 && (mVariableState[curr] == Tribool::False || !isValidChoice(curr, false))) {
+        mVariableState[curr] = Tribool::Unknown;
         --curr;
         this->popState();
       }
@@ -326,15 +375,15 @@ Status Solver::check()
         return Status::Unsat;
       }
 
-      mCurrentIndex = curr - 1;
-      nextState = {curr, false};
+      mDecisionLevel = curr - 1;
+      nextState = {curr, Tribool::False};
     }
   }
 }
 
 std::vector<bool> Solver::model() const
 {
-  return mVariables;
+  return {};
 }
 
 
