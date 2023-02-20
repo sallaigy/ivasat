@@ -6,13 +6,41 @@
 
 using namespace ivasat;
 
+::testing::AssertionResult assertSat(Instance& instance, Status expectedStatus)
+{
+  auto actualStatus = instance.check();
+
+  if (actualStatus != expectedStatus) {
+    return ::testing::AssertionFailure() << "Expected " << expectedStatus << " but got " << actualStatus << ".";
+  }
+
+  if (actualStatus == Status::Sat) {
+    // Check if the model is valid
+    std::vector<bool> model = instance.model();
+
+    for (size_t i = 0; i < instance.clauses().size(); ++i) {
+      const auto& clause = instance.clauses()[i];
+
+      bool result = false;
+      for (int varIdx : clause) {
+        result |= varIdx < 0 ? !model[-varIdx] : model[varIdx];
+      }
+
+      if (!result) {
+        return ::testing::AssertionFailure() << "Expected satisfiable instance, but the returned model is not valid for clause #" << i << ".";
+      }
+    }
+  }
+
+  return ::testing::AssertionSuccess();
+}
+
 TEST(SolverTest, smoke_test_simple_or)
 {
   // (x OR ~x)
   Instance inst(1, {{1, -1}});
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, smoke_test_simple_contradiction)
