@@ -1,7 +1,6 @@
 #include "ivasat/ivasat.h"
 
-#include <stack>
-#include <unordered_map>
+#include <ranges>
 #include <set>
 #include <algorithm>
 #include <iostream>
@@ -91,8 +90,22 @@ public:
 
   void assignUnitClause(int variableIndex, bool value)
   {
-    assert(!mPropagations.empty());
-    mPropagations.back()[variableIndex] = value;
+    mPropagations.emplace_back(variableIndex, value);
+    this->assignVariable(variableIndex, value ? Tribool::True : Tribool::False);
+  }
+
+  void assignVariable(int variableIndex, Tribool value)
+  {
+    if (variableIndex == mFirstUnknownIndex) {
+      for (size_t i = mFirstUnknownIndex + 1; i < mVariableState.size(); ++i) {
+        if (mVariableState[i] == Tribool::Unknown) {
+          mFirstUnknownIndex = i;
+          break;
+        }
+      }
+    }
+    mNumAssignedVariables++;
+    mVariableState[variableIndex] = value;
   }
 
   bool propagateUnitClause(int variableIndex, bool value)
@@ -127,24 +140,26 @@ public:
 
   void pushState()
   {
-    mPropagations.emplace_back();
+    mPropagationIndices.emplace_back(mPropagations.size());
   }
 
   void popState()
   {
-    mPropagations.pop_back();
-  }
+    size_t lastIdx = mPropagationIndices.back();
+    mPropagationIndices.pop_back();
 
-  std::optional<bool> getAssignment(int variableIndex)
-  {
-    for (auto it = mPropagations.rbegin(), ie = mPropagations.rend(); it != ie; ++it) {
-      auto result = it->find(variableIndex);
-      if (result != it->end()) {
-        return std::make_optional(result->second);
+    for (size_t i = lastIdx; i < mPropagations.size(); ++i) {
+      int varIdx = mPropagations[i].first;
+      if (varIdx < mFirstUnknownIndex) {
+        mFirstUnknownIndex = varIdx;
       }
+      mVariableState[varIdx] = Tribool::Unknown;
+      mNumAssignedVariables--;
     }
 
-    return std::nullopt;
+    if (!mPropagations.empty()) {
+      mPropagations.erase(mPropagations.begin() + lastIdx, mPropagations.end());
+    }
   }
 
   int unassignedLiteralIndex(size_t clauseIdx)
@@ -152,7 +167,7 @@ public:
     for (int literal : mClauses[clauseIdx]) {
       int finalIdx = literal < 0 ? -literal : literal;
       auto currentValue = mVariableState[finalIdx];
-      if (currentValue == Tribool::Unknown && !getAssignment(finalIdx).has_value()) {
+      if (currentValue == Tribool::Unknown) {
         return literal;
       }
     }
@@ -166,11 +181,13 @@ private:
 
   bool isValidChoice(int index, bool value)
   {
-    if (auto learnedFact = getAssignment(index); learnedFact && *learnedFact != value) {
-      return false;
+    if (mVariableState[index] == Tribool::Unknown) {
+      return true;
     }
 
-    return true;
+    return std::ranges::none_of(mPropagations, [&](std::pair<int, bool>& pair) {
+      return pair.first == index && pair.second != value;
+    });
   }
 
   ClauseStatus checkClause(size_t clauseIdx);
@@ -179,8 +196,10 @@ private:
   //==----------------------------------------------------------------------==//
   std::vector<Tribool> mVariableState;
   std::vector<std::vector<int>> mClauses;
-  std::vector<std::unordered_map<int, bool>> mPropagations;
+  std::vector<std::pair<int, bool>> mPropagations;
   std::vector<size_t> mPropagationIndices;
+  size_t mFirstUnknownIndex = 0;
+  size_t mNumAssignedVariables = 0;
 
   int mDecisionLevel = 0;
   Statistics mStats;
@@ -238,10 +257,7 @@ Solver::ClauseStatus Solver::checkClause(size_t clauseIdx)
 
     Tribool variableValue = Tribool::Unknown;
     if (mVariableState[finalIndex] == Tribool::Unknown) {
-      if (auto learnedFact = getAssignment(finalIndex); learnedFact) {
-        variableValue = *learnedFact ? Tribool::True : Tribool::False;
-        variableValue = shouldNegate ? ~variableValue : variableValue;
-      } else if (status == ClauseStatus::Unit || status == ClauseStatus::Unresolved) {
+      if (status == ClauseStatus::Unit || status == ClauseStatus::Unresolved) {
         status = ClauseStatus::Unresolved;
         continue;
       } else {
@@ -292,6 +308,10 @@ bool Solver::isValid()
 
 Status Solver::check()
 {
+  if (mClauses.empty()) {
+    return Status::Sat;
+  }
+
   // Do some pre-processing: order variables by usage
   std::vector<int> variableUsage(mVariableState.size(), 0);
   for (const auto& clause : mClauses) {
@@ -326,20 +346,21 @@ Status Solver::check()
   while (true) {
     auto [currentIndex, currentValue] = nextState;
 
-    // Is this a complete state?
-    if (currentIndex == mVariableState.size()) {
-      return Status::Sat;
-    }
 
     // Check if the current state is okay
     bool shouldBacktrack = false;
 
-    mVariableState[currentIndex] = currentValue;
+    this->assignVariable(currentIndex, currentValue);
     mDecisionLevel = currentIndex;
 
     this->pushState();
     if (isValid()) {
       int newState = currentIndex + 1;
+
+      // Is this a complete state?
+      if (mNumAssignedVariables == mVariableState.size() - 1) {
+        return Status::Sat;
+      }
 
       if (isValidChoice(newState, true)) {
         nextState = {newState, Tribool::True};
@@ -348,10 +369,12 @@ Status Solver::check()
       } else {
         // There is no valid choice for this literal
         this->popState();
+        --mNumAssignedVariables;
         shouldBacktrack = true;
       }
     } else if (currentValue == Tribool::True) {
       this->popState();
+      --mNumAssignedVariables;
       // Try again with setting the current index to false
       nextState = {currentIndex, Tribool::False};
     } else {
@@ -366,6 +389,7 @@ Status Solver::check()
       int curr = mDecisionLevel;
       while (curr > 0 && (mVariableState[curr] == Tribool::False || !isValidChoice(curr, false))) {
         mVariableState[curr] = Tribool::Unknown;
+        --mNumAssignedVariables;
         --curr;
         this->popState();
       }
@@ -376,6 +400,7 @@ Status Solver::check()
       }
 
       mDecisionLevel = curr - 1;
+      --mNumAssignedVariables;
       nextState = {curr, Tribool::False};
     }
   }
@@ -385,7 +410,6 @@ std::vector<bool> Solver::model() const
 {
   return {};
 }
-
 
 std::vector<bool> Instance::model() const
 {
