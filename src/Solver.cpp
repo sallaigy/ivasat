@@ -91,11 +91,18 @@ public:
   void assignUnitClause(int variableIndex, bool value)
   {
     mPropagations.emplace_back(variableIndex, value);
-    this->assignVariable(variableIndex, value ? Tribool::True : Tribool::False);
+    this->assignVariable(variableIndex, value);
   }
 
-  void assignVariable(int variableIndex, Tribool value)
+  void assignVariable(int variableIndex, bool booleanValue)
   {
+    Tribool value = booleanValue ? Tribool::True : Tribool::False;
+
+    if (mVariableState[variableIndex] == value) {
+      // This variable value has already been set by a previous propagation, there is nothing to do.
+      return;
+    }
+
     if (variableIndex == mFirstUnknownIndex) {
       for (size_t i = mFirstUnknownIndex + 1; i < mVariableState.size(); ++i) {
         if (mVariableState[i] == Tribool::Unknown) {
@@ -194,10 +201,16 @@ private:
 
   // Fields
   //==----------------------------------------------------------------------==//
-  std::vector<Tribool> mVariableState;
+
+  // Clause database
   std::vector<std::vector<int>> mClauses;
-  std::vector<std::pair<int, bool>> mPropagations;
+
+  // Internal solver state
+  std::vector<Tribool> mVariableState;
+  std::vector<std::pair<int, bool>> mDecisions;
   std::vector<size_t> mPropagationIndices;
+  std::vector<std::pair<int, bool>> mPropagations;
+
   size_t mFirstUnknownIndex = 0;
   size_t mNumAssignedVariables = 0;
 
@@ -232,7 +245,9 @@ Status Instance::check()
   std::cout << "Total checked states: " << solver.statistics().checkedStates << "\n";
   std::cout << "Total checked full combinations: " << solver.statistics().checkedFullCombinations << "\n";
 
-  mModel = solver.model();
+  if (status == Status::Sat) {
+    mModel = solver.model();
+  }
 
   return status;
 }
@@ -309,6 +324,7 @@ bool Solver::isValid()
 Status Solver::check()
 {
   if (mClauses.empty()) {
+    std::ranges::for_each(mVariableState, [](auto& v) { v = Tribool::True; });
     return Status::Sat;
   }
 
@@ -340,8 +356,7 @@ Status Solver::check()
   });
 
   // Start search
-  std::pair<int, Tribool> nextState = {1, Tribool::True};
-  this->pushState();
+  std::pair<int, bool> nextState = {1, true};
 
   while (true) {
     auto [currentIndex, currentValue] = nextState;
@@ -350,6 +365,7 @@ Status Solver::check()
     // Check if the current state is okay
     bool shouldBacktrack = false;
 
+    mDecisions.emplace_back(currentIndex, currentValue);
     this->assignVariable(currentIndex, currentValue);
     mDecisionLevel = currentIndex;
 
@@ -358,27 +374,27 @@ Status Solver::check()
       int newState = currentIndex + 1;
 
       // Is this a complete state?
-      if (mNumAssignedVariables == mVariableState.size() - 1) {
+      if (mDecisions.size() == mVariableState.size() - 1) {
         return Status::Sat;
       }
 
       if (isValidChoice(newState, true)) {
-        nextState = {newState, Tribool::True};
+        nextState = {newState, true};
       } else if (isValidChoice(newState, false)) {
-        nextState = {newState, Tribool::False};
+        nextState = {newState, false};
       } else {
         // There is no valid choice for this literal
         this->popState();
         --mNumAssignedVariables;
         shouldBacktrack = true;
       }
-    } else if (currentValue == Tribool::True) {
+    } else if (currentValue == true) {
       this->popState();
+      mDecisions.pop_back();
       --mNumAssignedVariables;
       // Try again with setting the current index to false
-      nextState = {currentIndex, Tribool::False};
+      nextState = {currentIndex, false};
     } else {
-      this->popState();
       shouldBacktrack = true;
     }
 
@@ -386,29 +402,38 @@ Status Solver::check()
 
     if (shouldBacktrack) {
       // We will have to backtrack to the closest non-false state
-      int curr = mDecisionLevel;
-      while (curr > 0 && (mVariableState[curr] == Tribool::False || !isValidChoice(curr, false))) {
-        mVariableState[curr] = Tribool::Unknown;
+      int i = mDecisions.size() - 1;
+      for (; i >= 0; --i) {
+        auto [decidedVariable, decidedValue] = mDecisions[i];
+        Tribool previousVariableState = mVariableState[decidedVariable];
+        mVariableState[decidedVariable] = Tribool::Unknown;
         --mNumAssignedVariables;
-        --curr;
         this->popState();
+        mDecisions.pop_back();
+
+        if (previousVariableState == Tribool::True && isValidChoice(decidedVariable, false)) {
+          nextState = {decidedVariable, false};
+          break;
+        }
       }
 
-      if (curr == 0) {
-        // We reached back to the top, the instance is not satisfiable
+      if (i == -1) {
         return Status::Unsat;
       }
-
-      mDecisionLevel = curr - 1;
-      --mNumAssignedVariables;
-      nextState = {curr, Tribool::False};
     }
   }
 }
 
 std::vector<bool> Solver::model() const
 {
-  return {};
+  std::vector<bool> result;
+  result.push_back(false);
+  for (size_t i = 1; i < mVariableState.size(); ++i) {
+    assert(mVariableState[i] != Tribool::Unknown);
+    result.push_back(mVariableState[i] == Tribool::False);
+  }
+
+  return result;
 }
 
 std::vector<bool> Instance::model() const
