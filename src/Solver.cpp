@@ -76,7 +76,7 @@ class Solver
 
 public:
   explicit Solver(const Instance& instance)
-    : mVariableState(instance.numVariables() + 1, Tribool::Unknown), mClauses(instance.clauses())
+    : mClauses(instance.clauses()), mVariableState(instance.numVariables() + 1, Tribool::Unknown)
   {}
 
   Status check();
@@ -103,47 +103,10 @@ public:
       return;
     }
 
-    if (variableIndex == mFirstUnknownIndex) {
-      for (size_t i = mFirstUnknownIndex + 1; i < mVariableState.size(); ++i) {
-        if (mVariableState[i] == Tribool::Unknown) {
-          mFirstUnknownIndex = i;
-          break;
-        }
-      }
-    }
-    mNumAssignedVariables++;
     mVariableState[variableIndex] = value;
   }
 
-  bool propagateUnitClause(int variableIndex, bool value)
-  {
-    this->assignUnitClause(variableIndex, value);
-
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      for (size_t i = 0; i < mClauses.size(); ++i) {
-        auto clauseStatus = checkClause(i);
-        if (clauseStatus == ClauseStatus::Conflicting) {
-          // The propagation set forward by the last decision led to a conflict, so we can learn that the last set
-          // literal cannot have its current value in any interpretation
-          return false;
-        }
-
-        if (clauseStatus == ClauseStatus::Unit) {
-          // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
-          int lastIndex = unassignedLiteralIndex(i);
-          bool shouldNegate = lastIndex < 0;
-          int finalIndex = shouldNegate ? -lastIndex : lastIndex;
-
-          this->assignUnitClause(finalIndex, !shouldNegate);
-          changed = true;
-        }
-      }
-    }
-
-    return true;
-  }
+  bool propagateUnitClause(int variableIndex, bool value);
 
   void pushState()
   {
@@ -157,11 +120,7 @@ public:
 
     for (size_t i = lastIdx; i < mPropagations.size(); ++i) {
       int varIdx = mPropagations[i].first;
-      if (varIdx < mFirstUnknownIndex) {
-        mFirstUnknownIndex = varIdx;
-      }
       mVariableState[varIdx] = Tribool::Unknown;
-      mNumAssignedVariables--;
     }
 
     if (!mPropagations.empty()) {
@@ -192,10 +151,12 @@ private:
       return true;
     }
 
-    return std::ranges::none_of(mPropagations, [&](std::pair<int, bool>& pair) {
+    return std::ranges::none_of(mPropagations, [&](const std::pair<int, bool>& pair) {
       return pair.first == index && pair.second != value;
     });
   }
+
+  void preprocess();
 
   ClauseStatus checkClause(size_t clauseIdx);
 
@@ -210,9 +171,6 @@ private:
   std::vector<std::pair<int, bool>> mDecisions;
   std::vector<size_t> mPropagationIndices;
   std::vector<std::pair<int, bool>> mPropagations;
-
-  size_t mFirstUnknownIndex = 0;
-  size_t mNumAssignedVariables = 0;
 
   int mDecisionLevel = 0;
   Statistics mStats;
@@ -321,22 +279,8 @@ bool Solver::isValid()
   return true;
 }
 
-Status Solver::check()
+void Solver::preprocess()
 {
-  if (mClauses.empty()) {
-    std::ranges::for_each(mVariableState, [](auto& v) { v = Tribool::True; });
-    return Status::Sat;
-  }
-
-  // Do some pre-processing: order variables by usage
-  std::vector<int> variableUsage(mVariableState.size(), 0);
-  for (const auto& clause : mClauses) {
-    for (int literal : clause) {
-      int index = literal < 0 ? -literal : literal;
-      variableUsage[index]++;
-    }
-  }
-
   // Order variables inside clauses by index
   for (auto& clause : mClauses) {
     std::ranges::sort(clause, [](int l, int r) {
@@ -354,13 +298,22 @@ Status Solver::check()
       return std::abs(leftVal) < std::abs(rightVal);
     });
   });
+}
+
+Status Solver::check()
+{
+  if (mClauses.empty()) {
+    std::ranges::for_each(mVariableState, [](auto& v) { v = Tribool::True; });
+    return Status::Sat;
+  }
+
+  this->preprocess();
 
   // Start search
   std::pair<int, bool> nextState = {1, true};
 
   while (true) {
     auto [currentIndex, currentValue] = nextState;
-
 
     // Check if the current state is okay
     bool shouldBacktrack = false;
@@ -380,18 +333,12 @@ Status Solver::check()
 
       if (isValidChoice(newState, true)) {
         nextState = {newState, true};
-      } else if (isValidChoice(newState, false)) {
-        nextState = {newState, false};
       } else {
-        // There is no valid choice for this literal
-        this->popState();
-        --mNumAssignedVariables;
-        shouldBacktrack = true;
+        nextState = {newState, false};
       }
     } else if (currentValue == true) {
       this->popState();
       mDecisions.pop_back();
-      --mNumAssignedVariables;
       // Try again with setting the current index to false
       nextState = {currentIndex, false};
     } else {
@@ -402,26 +349,54 @@ Status Solver::check()
 
     if (shouldBacktrack) {
       // We will have to backtrack to the closest non-false state
-      int i = mDecisions.size() - 1;
-      for (; i >= 0; --i) {
-        auto [decidedVariable, decidedValue] = mDecisions[i];
+      bool hasNextState = false;
+      for (auto it = mDecisions.rbegin(); it != mDecisions.rend(); ++it) {
+        auto [decidedVariable, decidedValue] = *it;
         Tribool previousVariableState = mVariableState[decidedVariable];
         mVariableState[decidedVariable] = Tribool::Unknown;
-        --mNumAssignedVariables;
         this->popState();
         mDecisions.pop_back();
 
         if (previousVariableState == Tribool::True && isValidChoice(decidedVariable, false)) {
           nextState = {decidedVariable, false};
+          hasNextState = true;
           break;
         }
       }
 
-      if (i == -1) {
+      if (!hasNextState) {
         return Status::Unsat;
       }
     }
   }
+}
+
+bool Solver::propagateUnitClause(int variableIndex, bool value)
+{
+  this->assignUnitClause(variableIndex, value);
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (size_t i = 0; i < mClauses.size(); ++i) {
+      auto clauseStatus = checkClause(i);
+      if (clauseStatus == ClauseStatus::Conflicting) {
+        return false;
+      }
+
+      if (clauseStatus == ClauseStatus::Unit) {
+        // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
+        int lastIndex = unassignedLiteralIndex(i);
+        bool shouldNegate = lastIndex < 0;
+        int finalIndex = shouldNegate ? -lastIndex : lastIndex;
+
+        this->assignUnitClause(finalIndex, !shouldNegate);
+        changed = true;
+      }
+    }
+  }
+
+  return true;
 }
 
 std::vector<bool> Solver::model() const
