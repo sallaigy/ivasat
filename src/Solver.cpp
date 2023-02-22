@@ -64,6 +64,11 @@ Tribool operator~(Tribool value)
   return Tribool::Unknown;
 }
 
+static Tribool liftBool(bool value)
+{
+  return value ? Tribool::True : Tribool::False;
+}
+
 class Solver
 {
   enum class ClauseStatus
@@ -74,9 +79,12 @@ class Solver
     Unresolved
   };
 
+  static constexpr int UnknownIndex = -1;
+
 public:
   explicit Solver(const Instance& instance)
-    : mClauses(instance.clauses()), mVariableState(instance.numVariables() + 1, Tribool::Unknown)
+    : mClauses(instance.clauses()), mVariableState(instance.numVariables() + 1, Tribool::Unknown),
+    mImplications(instance.numVariables() + 1, UnknownIndex), mAssignedAtLevel(instance.numVariables() + 1, UnknownIndex)
   {}
 
   Status check();
@@ -88,15 +96,19 @@ public:
     return mStats;
   }
 
-  void assignUnitClause(int variableIndex, bool value)
+  void assignUnitClause(int variableIndex, bool value, int clauseIndex)
   {
     mPropagations.emplace_back(variableIndex, value);
     this->assignVariable(variableIndex, value);
+
+    assert(mImplications[variableIndex] == UnknownIndex && "No implications should exists for a freshly assigned unit clause");
+    mImplications[variableIndex] = clauseIndex;
   }
 
   void assignVariable(int variableIndex, bool booleanValue)
   {
     Tribool value = booleanValue ? Tribool::True : Tribool::False;
+    assert(mVariableState[variableIndex] == value || mVariableState[variableIndex] == Tribool::Unknown);
 
     if (mVariableState[variableIndex] == value) {
       // This variable value has already been set by a previous propagation, there is nothing to do.
@@ -104,9 +116,26 @@ public:
     }
 
     mVariableState[variableIndex] = value;
+    ++mNumAssignedVariables;
+
+    assert(mAssignedAtLevel[variableIndex] == UnknownIndex && "No assignment level should exist for an unassigned variable");
+    mAssignedAtLevel[variableIndex] = this->decisionLevel();
   }
 
-  bool propagateUnitClause(int variableIndex, bool value);
+  void undoAssignment(size_t variableIndex)
+  {
+    if (mVariableState[variableIndex] == Tribool::Unknown) {
+      // TODO: Should this be possible?
+      return;
+    }
+
+    mVariableState[variableIndex] = Tribool::Unknown;
+    mAssignedAtLevel[variableIndex] = UnknownIndex;
+    mImplications[variableIndex] = UnknownIndex;
+    --mNumAssignedVariables;
+  }
+
+  bool propagateUnitClause(int variableIndex, bool value, size_t clauseIndex);
 
   void pushState()
   {
@@ -120,7 +149,7 @@ public:
 
     for (size_t i = lastIdx; i < mPropagations.size(); ++i) {
       int varIdx = mPropagations[i].first;
-      mVariableState[varIdx] = Tribool::Unknown;
+      this->undoAssignment(varIdx);
     }
 
     if (!mPropagations.empty()) {
@@ -147,10 +176,6 @@ private:
 
   bool isValidChoice(int index, bool value)
   {
-    if (mVariableState[index] == Tribool::Unknown) {
-      return true;
-    }
-
     return std::ranges::none_of(mPropagations, [&](const std::pair<int, bool>& pair) {
       return pair.first == index && pair.second != value;
     });
@@ -159,6 +184,34 @@ private:
   void preprocess();
 
   ClauseStatus checkClause(size_t clauseIdx);
+
+  // Some helper methods
+  //==----------------------------------------------------------------------==//
+  size_t decisionLevel() const
+  {
+    return mDecisions.size();
+  }
+
+  size_t numAssigned() const
+  {
+    //return std::ranges::count_if(mVariableState, [](auto& v) { return v != Tribool::Unknown; });
+    assert(std::ranges::count_if(mVariableState, [](auto& v) { return v != Tribool::Unknown; }) == mNumAssignedVariables);
+    return mNumAssignedVariables;
+  }
+
+  int firstUnassignedIndex(int start) const
+  {
+    for (int i = start; i < mVariableState.size(); ++i) {
+      if (mVariableState[i] == Tribool::Unknown) {
+        return i;
+      }
+    }
+
+    // This really should not happen in a valid solver state
+    assert(false && "There must be an unassigned index in a valid solver state!");
+    return UnknownIndex;
+  }
+
 
   // Fields
   //==----------------------------------------------------------------------==//
@@ -172,7 +225,16 @@ private:
   std::vector<size_t> mPropagationIndices;
   std::vector<std::pair<int, bool>> mPropagations;
 
-  int mDecisionLevel = 0;
+  // For each assigned variable index, the index of the clause that implied its value.
+  // The value for decided and unassigned variables is going to be -1.
+  std::vector<int> mImplications;
+
+  // For each assigned variable index, the decision level at which it was assigned to a value.
+  // For unassigned variables, the value is going to be -1.
+  std::vector<int> mAssignedAtLevel;
+
+  unsigned mNumAssignedVariables = 0;
+
   Statistics mStats;
 };
 
@@ -253,7 +315,7 @@ Solver::ClauseStatus Solver::checkClause(size_t clauseIdx)
 bool Solver::isValid()
 {
   mStats.checkedStates++;
-  if (mDecisionLevel == mVariableState.size() - 1) {
+  if (mDecisions.size() == mVariableState.size() - 1) {
     mStats.checkedFullCombinations++;
   }
 
@@ -269,7 +331,7 @@ bool Solver::isValid()
       bool shouldNegate = lastIndex < 0;
       int variableIndex = shouldNegate ? -lastIndex : lastIndex;
 
-      bool sucessfulPropagation = this->propagateUnitClause(variableIndex, !shouldNegate);
+      bool sucessfulPropagation = this->propagateUnitClause(variableIndex, !shouldNegate, i);
       if (!sucessfulPropagation) {
         return false;
       }
@@ -320,23 +382,23 @@ Status Solver::check()
 
     mDecisions.emplace_back(currentIndex, currentValue);
     this->assignVariable(currentIndex, currentValue);
-    mDecisionLevel = currentIndex;
 
     this->pushState();
     if (isValid()) {
-      int newState = currentIndex + 1;
-
       // Is this a complete state?
-      if (mDecisions.size() == mVariableState.size() - 1) {
+      if (numAssigned() == mVariableState.size() - 1) {
         return Status::Sat;
       }
 
+      int newState = firstUnassignedIndex(currentIndex);
+      //int newState = currentIndex + 1;
       if (isValidChoice(newState, true)) {
         nextState = {newState, true};
       } else {
         nextState = {newState, false};
       }
     } else if (currentValue == true) {
+      this->undoAssignment(currentIndex);
       this->popState();
       mDecisions.pop_back();
       // Try again with setting the current index to false
@@ -353,7 +415,7 @@ Status Solver::check()
       for (auto it = mDecisions.rbegin(); it != mDecisions.rend(); ++it) {
         auto [decidedVariable, decidedValue] = *it;
         Tribool previousVariableState = mVariableState[decidedVariable];
-        mVariableState[decidedVariable] = Tribool::Unknown;
+        this->undoAssignment(decidedVariable);
         this->popState();
         mDecisions.pop_back();
 
@@ -371,9 +433,9 @@ Status Solver::check()
   }
 }
 
-bool Solver::propagateUnitClause(int variableIndex, bool value)
+bool Solver::propagateUnitClause(int variableIndex, bool value, size_t clauseIndex)
 {
-  this->assignUnitClause(variableIndex, value);
+  this->assignUnitClause(variableIndex, value, clauseIndex);
 
   bool changed = true;
   while (changed) {
@@ -390,7 +452,7 @@ bool Solver::propagateUnitClause(int variableIndex, bool value)
         bool shouldNegate = lastIndex < 0;
         int finalIndex = shouldNegate ? -lastIndex : lastIndex;
 
-        this->assignUnitClause(finalIndex, !shouldNegate);
+        this->assignUnitClause(finalIndex, !shouldNegate, i);
         changed = true;
       }
     }
