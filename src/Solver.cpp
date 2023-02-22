@@ -430,7 +430,7 @@ std::vector<bool> Solver::model() const
   result.push_back(false);
   for (size_t i = 1; i < mVariableState.size(); ++i) {
     assert(mVariableState[i] != Tribool::Unknown);
-    result.push_back(mVariableState[i] == Tribool::False);
+    result.push_back(mVariableState[i] == Tribool::True);
   }
 
   return result;

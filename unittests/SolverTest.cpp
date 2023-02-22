@@ -47,43 +47,38 @@ TEST(SolverTest, smoke_test_simple_contradiction)
 {
   // (x) AND (~x)
   Instance inst = {1, {{1}, {-1}}};
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Unsat);
+  EXPECT_TRUE(assertSat(inst, Status::Unsat));
 }
 
 TEST(SolverTest, smoke_test_two_variables)
 {
   // (x OR y)
   Instance inst = {2, {{1, 2}}};
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, no_variables)
 {
   Instance inst(0, {});
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, empty_instance)
 {
   Instance inst(4, {});
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, negated_first_variable)
 {
   // (~x) AND (y)
   Instance inst(2, {{-1}, {2}});
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, negated_second_variable)
@@ -93,18 +88,16 @@ TEST(SolverTest, negated_second_variable)
     {1, 2, -3},
     {-2}
   });
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, negated_second_variable_2)
 {
   // (~y | z) & (x | ~z) & (z)
   Instance inst(3, {{-2, 3}, {1, -3}, {3}});
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, complex_unsat)
@@ -118,9 +111,8 @@ TEST(SolverTest, complex_unsat)
     {-3, 5},
     {3, 4}
   });
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Unsat);
+  EXPECT_TRUE(assertSat(inst, Status::Unsat));
 }
 
 TEST(SolverTest, complex_sat)
@@ -133,9 +125,8 @@ TEST(SolverTest, complex_sat)
     {-3, 5},
     {3, 4}
   });
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, learning_clauses)
@@ -148,9 +139,8 @@ TEST(SolverTest, learning_clauses)
     {5, 7},
     {-1, 5, -7}
   });
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, failed_literal)
@@ -162,9 +152,8 @@ TEST(SolverTest, failed_literal)
     {1, 2, -4},
     {-1, 2, 4}
   });
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, failed_literal_from_complex_sat)
@@ -175,9 +164,8 @@ TEST(SolverTest, failed_literal_from_complex_sat)
     {2, 4},
     {2, -4}
   });
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, wrong_unsat)
@@ -188,9 +176,8 @@ TEST(SolverTest, wrong_unsat)
     {1, -3, -4},
     {-1}
   });
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, wrong_unsat_2)
@@ -212,9 +199,8 @@ TEST(SolverTest, wrong_unsat_2)
     {6, 7},
     {-1, -7}
   });
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, wrong_unsat_3)
@@ -244,9 +230,8 @@ TEST(SolverTest, wrong_unsat_3)
     {9, 10, 11},
     {-1, -11},
   });
-  auto status = inst.check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
 TEST(SolverTest, wrong_unsat_4)
@@ -259,7 +244,6 @@ p cnf 7 4
 -4 -6 0
 )");
   auto inst = parseDimacs(input);
-  auto status = inst->check();
 
-  EXPECT_EQ(status, Status::Sat);
+  EXPECT_TRUE(assertSat(*inst, Status::Sat));
 }
