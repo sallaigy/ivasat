@@ -236,14 +236,16 @@ TEST(SolverTest, wrong_unsat_3)
 
 TEST(SolverTest, wrong_unsat_4)
 {
-  std::istringstream input(R"(
-p cnf 7 4
-3 -5 7 0
--3 6 0
-4 0
--4 -6 0
-)");
-  auto inst = parseDimacs(input);
+  // 3 -5 7 0
+  //-3 6 0
+  //4 0
+  //-4 -6 0
+  Instance inst(7, {
+    {3, -5, 7},
+    {-3, 6},
+    {4},
+    {-4, -6}
+  });
 
-  EXPECT_TRUE(assertSat(*inst, Status::Sat));
+  EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
