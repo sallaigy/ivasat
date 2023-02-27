@@ -6,6 +6,8 @@
 #include <iostream>
 #include <optional>
 #include <cassert>
+#include <map>
+#include <sstream>
 
 using namespace ivasat;
 
@@ -98,7 +100,6 @@ public:
 
   void assignUnitClause(int variableIndex, bool value, int clauseIndex)
   {
-    mPropagations.emplace_back(variableIndex, value);
     this->assignVariable(variableIndex, value);
 
     assert(mImplications[variableIndex] == UnknownIndex && "No implications should exists for a freshly assigned unit clause");
@@ -107,7 +108,7 @@ public:
 
   void assignVariable(int variableIndex, bool booleanValue)
   {
-    Tribool value = booleanValue ? Tribool::True : Tribool::False;
+    Tribool value = liftBool(booleanValue);
     assert(mVariableState[variableIndex] == value || mVariableState[variableIndex] == Tribool::Unknown);
 
     if (mVariableState[variableIndex] == value) {
@@ -116,44 +117,43 @@ public:
     }
 
     mVariableState[variableIndex] = value;
-    ++mNumAssignedVariables;
 
     assert(mAssignedAtLevel[variableIndex] == UnknownIndex && "No assignment level should exist for an unassigned variable");
     mAssignedAtLevel[variableIndex] = this->decisionLevel();
+    mTrail.emplace_back(variableIndex, booleanValue);
   }
 
   void undoAssignment(size_t variableIndex)
   {
-    if (mVariableState[variableIndex] == Tribool::Unknown) {
-      // TODO: Should this be possible?
-      return;
-    }
+    assert(mVariableState[variableIndex] != Tribool::Unknown && "Cannot undo an assignment that did not take place");
 
     mVariableState[variableIndex] = Tribool::Unknown;
     mAssignedAtLevel[variableIndex] = UnknownIndex;
     mImplications[variableIndex] = UnknownIndex;
-    --mNumAssignedVariables;
   }
 
   bool propagateUnitClause(int variableIndex, bool value, size_t clauseIndex);
 
-  void pushState()
+  void pushDecision(int varIdx, bool value)
   {
-    mPropagationIndices.emplace_back(mPropagations.size());
+    mTrailIndices.emplace_back(mTrail.size());
+    mDecisions.emplace_back(varIdx, value);
+    this->assignVariable(varIdx, value);
   }
 
-  void popState()
+  void popDecision()
   {
-    size_t lastIdx = mPropagationIndices.back();
-    mPropagationIndices.pop_back();
+    size_t lastIdx = mTrailIndices.back();
+    mTrailIndices.pop_back();
 
-    for (size_t i = lastIdx; i < mPropagations.size(); ++i) {
-      int varIdx = mPropagations[i].first;
+    for (size_t i = lastIdx; i < mTrail.size(); ++i) {
+      int varIdx = mTrail[i].first;
       this->undoAssignment(varIdx);
     }
+    mDecisions.pop_back();
 
-    if (!mPropagations.empty()) {
-      mPropagations.erase(mPropagations.begin() + lastIdx, mPropagations.end());
+    if (!mTrail.empty()) {
+      mTrail.erase(mTrail.begin() + lastIdx, mTrail.end());
     }
   }
 
@@ -176,14 +176,18 @@ private:
 
   bool isValidChoice(int index, bool value)
   {
-    return std::ranges::none_of(mPropagations, [&](const std::pair<int, bool>& pair) {
+    return std::ranges::none_of(mTrail, [&](const std::pair<int, bool>& pair) {
       return pair.first == index && pair.second != value;
     });
   }
 
   void preprocess();
 
-  ClauseStatus checkClause(size_t clauseIdx);
+  ClauseStatus checkClause(const std::vector<int>& clause);
+
+  void analyzeConflict(size_t domSetIndex);
+
+  std::vector<std::pair<int, bool>> reasonFor(std::pair<int, bool> literal);
 
   // Some helper methods
   //==----------------------------------------------------------------------==//
@@ -194,9 +198,8 @@ private:
 
   size_t numAssigned() const
   {
-    //return std::ranges::count_if(mVariableState, [](auto& v) { return v != Tribool::Unknown; });
-    assert(std::ranges::count_if(mVariableState, [](auto& v) { return v != Tribool::Unknown; }) == mNumAssignedVariables);
-    return mNumAssignedVariables;
+    assert(std::ranges::count_if(mVariableState, [](auto& v) { return v != Tribool::Unknown; }) == mTrail.size());
+    return mTrail.size();
   }
 
   int firstUnassignedIndex(int start) const
@@ -212,6 +215,12 @@ private:
     return UnknownIndex;
   }
 
+  // Debug methods
+  //==----------------------------------------------------------------------==//
+
+  /// Write the current implication graph to standard output in DOT format. If the conflicting clause index is not
+  /// `UnknownIndex`, a conflict node will be present in the graph as well.
+  void dumpImplicationGraph(int conflictClauseIndex = UnknownIndex);
 
   // Fields
   //==----------------------------------------------------------------------==//
@@ -222,10 +231,8 @@ private:
   // Internal solver state
   std::vector<Tribool> mVariableState;
   std::vector<std::pair<int, bool>> mDecisions;
-  std::vector<size_t> mPropagationIndices;
-  std::vector<std::pair<int, bool>> mPropagations;
 
-  // For each assigned variable index, the index of the clause that implied its value.
+  // For each assigned variable index, the index of the variable and clause that implied its value.
   // The value for decided and unassigned variables is going to be -1.
   std::vector<int> mImplications;
 
@@ -233,7 +240,9 @@ private:
   // For unassigned variables, the value is going to be -1.
   std::vector<int> mAssignedAtLevel;
 
-  unsigned mNumAssignedVariables = 0;
+  // List of assignments in chronological order.
+  std::vector<std::pair<int, bool>> mTrail;
+  std::vector<size_t> mTrailIndices;
 
   Statistics mStats;
 };
@@ -272,10 +281,8 @@ Status Instance::check()
   return status;
 }
 
-Solver::ClauseStatus Solver::checkClause(size_t clauseIdx)
+Solver::ClauseStatus Solver::checkClause(const std::vector<int>& clause)
 {
-  const std::vector<int>& clause = mClauses[clauseIdx];
-
   ClauseStatus status = ClauseStatus::Conflicting;
 
   for (int varIdx : clause) {
@@ -320,8 +327,9 @@ bool Solver::isValid()
   }
 
   for (size_t i = 0; i < mClauses.size(); ++i) {
-    auto clauseStatus = checkClause(i);
+    auto clauseStatus = checkClause(mClauses[i]);
     if (clauseStatus == ClauseStatus::Conflicting) {
+      this->analyzeConflict(i);
       return false;
     }
 
@@ -380,10 +388,8 @@ Status Solver::check()
     // Check if the current state is okay
     bool shouldBacktrack = false;
 
-    mDecisions.emplace_back(currentIndex, currentValue);
-    this->assignVariable(currentIndex, currentValue);
+    this->pushDecision(currentIndex, currentValue);
 
-    this->pushState();
     if (isValid()) {
       // Is this a complete state?
       if (numAssigned() == mVariableState.size() - 1) {
@@ -391,16 +397,13 @@ Status Solver::check()
       }
 
       int newState = firstUnassignedIndex(currentIndex);
-      //int newState = currentIndex + 1;
       if (isValidChoice(newState, true)) {
         nextState = {newState, true};
       } else {
         nextState = {newState, false};
       }
     } else if (currentValue == true) {
-      this->undoAssignment(currentIndex);
-      this->popState();
-      mDecisions.pop_back();
+      this->popDecision();
       // Try again with setting the current index to false
       nextState = {currentIndex, false};
     } else {
@@ -415,9 +418,7 @@ Status Solver::check()
       for (auto it = mDecisions.rbegin(); it != mDecisions.rend(); ++it) {
         auto [decidedVariable, decidedValue] = *it;
         Tribool previousVariableState = mVariableState[decidedVariable];
-        this->undoAssignment(decidedVariable);
-        this->popState();
-        mDecisions.pop_back();
+        this->popDecision();
 
         if (previousVariableState == Tribool::True && isValidChoice(decidedVariable, false)) {
           nextState = {decidedVariable, false};
@@ -441,8 +442,10 @@ bool Solver::propagateUnitClause(int variableIndex, bool value, size_t clauseInd
   while (changed) {
     changed = false;
     for (size_t i = 0; i < mClauses.size(); ++i) {
-      auto clauseStatus = checkClause(i);
+      const auto& clause = mClauses[i];
+      auto clauseStatus = checkClause(clause);
       if (clauseStatus == ClauseStatus::Conflicting) {
+        this->analyzeConflict(i);
         return false;
       }
 
@@ -459,6 +462,145 @@ bool Solver::propagateUnitClause(int variableIndex, bool value, size_t clauseInd
   }
 
   return true;
+}
+
+void Solver::analyzeConflict(size_t conflictClauseIndex)
+{
+  // Find a cut of the implication graph through a unique implication point (UIP).
+  // The UIP is a node at decision level `d` such that every path from the decision variable at level `d` to the
+  // conflict node must go through it.
+
+  // A cut for a UIP `l` is a pair (A,B) where
+  //  - B contains all successors of `l` where there is a path to the conflict node
+  //  - A contains all the rest of nodes
+
+  // TODO: Debug
+  this->dumpImplicationGraph(conflictClauseIndex);
+
+  // TODO: There is a more sophisticated linear-time algorithm described in the Minisat paper
+
+  // Given the last decision literal as a flow graph source (decision literals are always zero in-degree), the first
+  // UIP will be the closest dominator of the conflict node.
+  //  D(n_0) = { n_0 }
+  //  D(n) = { n } U intersect(for p in pred(n): D(p))
+  std::vector<bool> seen(mTrail.size() + 1, false);
+
+  // The dominator set of each node on the trail
+  std::map<int, int> trailIndices;
+  for (int i = 0; i < mTrail.size(); ++i) {
+    trailIndices[mTrail[i].first] = i;
+  }
+
+  std::vector<std::vector<bool>> dominators(mTrail.size() + 1, std::vector<bool>(mTrail.size() + 1, false));
+
+  size_t conflictNodeIdx = mTrail.size();
+
+  auto preds = [this, &trailIndices](size_t domSetIndex) {
+    std::vector<int> result;
+
+    if (domSetIndex == mTrail.size()) {
+
+    } else {
+      int literalIndex = mTrail[domSetIndex].first;
+      int impliedByClause = mImplications[literalIndex];
+      if (impliedByClause == UnknownIndex) {
+        return result;
+      }
+
+      for (int clauseLit: mClauses[impliedByClause]) {
+        int varIdx = clauseLit < 0 ? -clauseLit : clauseLit;
+
+        if (varIdx != literalIndex) {
+          result.push_back(varIdx);
+        }
+      }
+    }
+
+    return result;
+  };
+
+  int lastDecisionIdx = trailIndices[mDecisions.back().first];
+  dominators[lastDecisionIdx][lastDecisionIdx] = true;
+
+  // Iterative algorithm for finding dominators
+  for (int i = 0; i < dominators.size(); ++i) {
+    if (i != lastDecisionIdx) {
+      // Initial condition: set all vertices (except the source) to be dominated by every other vertex
+      for (int j = 0; j < dominators.size(); ++j) {
+        dominators[i][j] = true;
+      }
+    }
+  }
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (int i = 0; i < dominators.size(); ++i) {
+      if (i == lastDecisionIdx) {
+        continue;
+      }
+
+      auto prev = dominators[i];
+      std::vector<bool> predDoms(dominators[i].size(), true);
+      for (int p : preds(i)) {
+        int predDomIdx = trailIndices[p];
+        for (size_t j = 0; j < dominators.size(); ++j) {
+          std::cout << "(" << i << ", " << j << ", " << predDomIdx << ")" << std::endl;
+          predDoms[j] = predDoms[j] && dominators[predDomIdx][j];
+
+        }
+      }
+
+      dominators[i] = predDoms;
+      dominators[i][i] = true;
+
+      if (prev != dominators[i]) {
+        changed = true;
+      }
+    }
+  }
+
+  std::cout << dominators.size() << "\n";
+
+
+}
+
+void Solver::dumpImplicationGraph(int conflictClauseIndex)
+{
+  const auto& conflictClause = mClauses[conflictClauseIndex];
+  std::stringstream ss;
+
+  ss << "digraph G {\n";
+
+  for (const auto& [varIdx, value] : mTrail) {
+    int assignedAt = mAssignedAtLevel[varIdx];
+    ss << "node_" << varIdx << " [label=\"" << varIdx << ":" << std::boolalpha << value << "@" << assignedAt << "\"];\n";
+  }
+
+  for (int i = 0; i < mImplications.size(); ++i) {
+    int clauseIdx = mImplications[i];
+
+    if (clauseIdx == UnknownIndex) {
+      continue;
+    }
+
+    for (int lit : mClauses[clauseIdx]) {
+      int varIdx = lit < 0 ? -lit : lit;
+      if (varIdx != i) {
+        ss << "node_" << varIdx << " -> " << "node_" << i << "[label=\"  " << clauseIdx << "\"];\n";
+      }
+    }
+  }
+
+  for (int lit : conflictClause) {
+    int finalIdx = lit < 0 ? -lit : lit;
+
+    ss << "node_" << finalIdx << " -> " << "conflict[label=\"" << conflictClauseIndex << "\"];\n";
+  }
+
+  ss << "}";
+
+  std::cout << ss.str() << std::endl;
 }
 
 std::vector<bool> Solver::model() const
