@@ -1,3 +1,5 @@
+#include "Solver.h"
+
 #include "ivasat/ivasat.h"
 
 #include <ranges>
@@ -19,52 +21,6 @@ struct Statistics
   unsigned checkedStates = 0;
   unsigned checkedFullCombinations = 0;
 };
-
-enum class Tribool
-{
-  False,
-  True,
-  Unknown
-};
-
-Tribool operator&(Tribool left, Tribool right)
-{
-  if (left == Tribool::False || right == Tribool::False) {
-    return Tribool::False;
-  }
-
-  if (left == Tribool::Unknown || right == Tribool::Unknown) {
-    return Tribool::Unknown;
-  }
-
-  return Tribool::True;
-}
-
-Tribool operator|(Tribool left, Tribool right)
-{
-  if (left == Tribool::True || right == Tribool::True) {
-    return Tribool::True;
-  }
-
-  if (left == Tribool::Unknown || right == Tribool::Unknown) {
-    return Tribool::Unknown;
-  }
-
-  return Tribool::False;
-}
-
-Tribool operator~(Tribool value)
-{
-  if (value == Tribool::True) {
-    return Tribool::False;
-  }
-
-  if (value == Tribool::False) {
-    return Tribool::True;
-  }
-
-  return Tribool::Unknown;
-}
 
 static Tribool liftBool(bool value)
 {
@@ -147,7 +103,7 @@ public:
     mTrailIndices.pop_back();
 
     for (size_t i = lastIdx; i < mTrail.size(); ++i) {
-      int varIdx = mTrail[i].first;
+      int varIdx = mTrail[i].index();
       this->undoAssignment(varIdx);
     }
     mDecisions.pop_back();
@@ -176,8 +132,8 @@ private:
 
   bool isValidChoice(int index, bool value)
   {
-    return std::ranges::none_of(mTrail, [&](const std::pair<int, bool>& pair) {
-      return pair.first == index && pair.second != value;
+    return std::ranges::none_of(mTrail, [&](Literal lit) {
+      return lit.index() == index && lit.value() != value;
     });
   }
 
@@ -186,8 +142,6 @@ private:
   ClauseStatus checkClause(const std::vector<int>& clause);
 
   void analyzeConflict(size_t domSetIndex);
-
-  std::vector<std::pair<int, bool>> reasonFor(std::pair<int, bool> literal);
 
   // Some helper methods
   //==----------------------------------------------------------------------==//
@@ -230,7 +184,7 @@ private:
 
   // Internal solver state
   std::vector<Tribool> mVariableState;
-  std::vector<std::pair<int, bool>> mDecisions;
+  std::vector<Literal> mDecisions;
 
   // For each assigned variable index, the index of the variable and clause that implied its value.
   // The value for decided and unassigned variables is going to be -1.
@@ -241,7 +195,7 @@ private:
   std::vector<int> mAssignedAtLevel;
 
   // List of assignments in chronological order.
-  std::vector<std::pair<int, bool>> mTrail;
+  std::vector<Literal> mTrail;
   std::vector<size_t> mTrailIndices;
 
   Statistics mStats;
@@ -416,7 +370,7 @@ Status Solver::check()
       // We will have to backtrack to the closest non-false state
       bool hasNextState = false;
       for (auto it = mDecisions.rbegin(); it != mDecisions.rend(); ++it) {
-        auto [decidedVariable, decidedValue] = *it;
+        int decidedVariable = it->index();
         Tribool previousVariableState = mVariableState[decidedVariable];
         this->popDecision();
 
@@ -572,9 +526,11 @@ void Solver::dumpImplicationGraph(int conflictClauseIndex)
 
   ss << "digraph G {\n";
 
-  for (const auto& [varIdx, value] : mTrail) {
+  for (Literal lit : mTrail) {
+    int varIdx = lit.index();
+
     int assignedAt = mAssignedAtLevel[varIdx];
-    ss << "node_" << varIdx << " [label=\"" << varIdx << ":" << std::boolalpha << value << "@" << assignedAt << "\"];\n";
+    ss << "node_" << varIdx << " [label=\"" << varIdx << ":" << std::boolalpha << lit.value() << "@" << assignedAt << "\"];\n";
   }
 
   for (int i = 0; i < mImplications.size(); ++i) {
