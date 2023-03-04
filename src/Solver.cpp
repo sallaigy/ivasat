@@ -42,9 +42,17 @@ class Solver
 
 public:
   explicit Solver(const Instance& instance)
-    : mClauses(instance.clauses()), mVariableState(instance.numVariables() + 1, Tribool::Unknown),
+    : mVariableState(instance.numVariables() + 1, Tribool::Unknown),
     mImplications(instance.numVariables() + 1, UnknownIndex), mAssignedAtLevel(instance.numVariables() + 1, UnknownIndex)
-  {}
+  {
+    for (const auto& clauseData : instance.clauses()) {
+      std::vector<Literal> literals;
+      for (int litData : clauseData) {
+        literals.emplace_back(litData);
+      }
+      mClauses.emplace_back(literals);
+    }
+  }
 
   Status check();
 
@@ -114,18 +122,17 @@ public:
     }
   }
 
-  int unassignedLiteralIndex(size_t clauseIdx)
+  Literal unassignedLiteral(size_t clauseIdx)
   {
-    for (int literal : mClauses[clauseIdx]) {
-      int finalIdx = literal < 0 ? -literal : literal;
-      auto currentValue = mVariableState[finalIdx];
+    for (Literal literal : mClauses[clauseIdx]) {
+      auto currentValue = mVariableState[literal.index()];
       if (currentValue == Tribool::Unknown) {
         return literal;
       }
     }
 
     assert(false && "Should be unreachable!");
-    return 0;
+    return Literal{0};
   }
 
 private:
@@ -140,7 +147,7 @@ private:
 
   void preprocess();
 
-  ClauseStatus checkClause(const std::vector<int>& clause);
+  ClauseStatus checkClause(const Clause& clause);
 
   void analyzeConflict(size_t trailIndex);
 
@@ -181,7 +188,7 @@ private:
   //==----------------------------------------------------------------------==//
 
   // Clause database
-  std::vector<std::vector<int>> mClauses;
+  std::vector<Clause> mClauses;
 
   // Internal solver state
   std::vector<Tribool> mVariableState;
@@ -237,24 +244,13 @@ Status Instance::check()
   return status;
 }
 
-Solver::ClauseStatus Solver::checkClause(const std::vector<int>& clause)
+Solver::ClauseStatus Solver::checkClause(const Clause& clause)
 {
   ClauseStatus status = ClauseStatus::Conflicting;
 
-  for (int varIdx : clause) {
-    bool shouldNegate;
-    int finalIndex;
-
-    if (varIdx < 0) {
-      shouldNegate = true;
-      finalIndex = -varIdx;
-    } else {
-      shouldNegate = false;
-      finalIndex = varIdx;
-    }
-
+  for (Literal literal : clause) {
     Tribool variableValue = Tribool::Unknown;
-    if (mVariableState[finalIndex] == Tribool::Unknown) {
+    if (mVariableState[literal.index()] == Tribool::Unknown) {
       if (status == ClauseStatus::Unit || status == ClauseStatus::Unresolved) {
         status = ClauseStatus::Unresolved;
         continue;
@@ -263,8 +259,8 @@ Solver::ClauseStatus Solver::checkClause(const std::vector<int>& clause)
         continue;
       }
     } else {
-      variableValue = mVariableState[finalIndex];
-      variableValue = shouldNegate ? ~variableValue : variableValue;
+      variableValue = mVariableState[literal.index()];
+      variableValue = literal.isNegated() ? ~variableValue : variableValue;
     }
 
     if (variableValue == Tribool::True) {
@@ -291,11 +287,9 @@ bool Solver::isValid()
 
     if (clauseStatus == ClauseStatus::Unit) {
       // The clause is not satisfied but the last literal is unassigned, so we can propagate its value
-      int lastIndex = unassignedLiteralIndex(i);
-      bool shouldNegate = lastIndex < 0;
-      int variableIndex = shouldNegate ? -lastIndex : lastIndex;
+      Literal lastLiteral = unassignedLiteral(i);
 
-      bool sucessfulPropagation = this->propagateUnitClause(variableIndex, !shouldNegate, i);
+      bool sucessfulPropagation = this->propagateUnitClause(lastLiteral.index(), lastLiteral.value(), i);
       if (!sucessfulPropagation) {
         return false;
       }
@@ -307,22 +301,9 @@ bool Solver::isValid()
 
 void Solver::preprocess()
 {
-  // Order variables inside clauses by index
-  for (auto& clause : mClauses) {
-    std::ranges::sort(clause, [](int l, int r) {
-      return std::abs(l) < std::abs(r);
-    });
-  }
-
   // Order clauses by size
   std::ranges::sort(mClauses, [](auto& l, auto& r) {
-    if (l.size() < r.size()) {
-      return true;
-    }
-
-    return std::ranges::lexicographical_compare(l, r, [](int leftVal, int rightVal) {
-      return std::abs(leftVal) < std::abs(rightVal);
-    });
+    return l.size() < r.size();
   });
 }
 
@@ -407,11 +388,8 @@ bool Solver::propagateUnitClause(int variableIndex, bool value, size_t clauseInd
 
       if (clauseStatus == ClauseStatus::Unit) {
         // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
-        int lastIndex = unassignedLiteralIndex(i);
-        bool shouldNegate = lastIndex < 0;
-        int finalIndex = shouldNegate ? -lastIndex : lastIndex;
-
-        this->assignUnitClause(finalIndex, !shouldNegate, i);
+        Literal lastLiteral = unassignedLiteral(i);
+        this->assignUnitClause(lastLiteral.index(), lastLiteral.value(), i);
         changed = true;
       }
     }
@@ -441,9 +419,7 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
       return result;
     }
 
-    for (int clauseLitIndex : mClauses[impliedByClause]) {
-      // FIXME
-      Literal clauseLit{clauseLitIndex};
+    for (Literal clauseLit : mClauses[impliedByClause]) {
       if (clauseLit.index() != literalIndex) {
         result.emplace_back(clauseLit.index(), mVariableState[clauseLit.index()] == Tribool::True ? true : false);
       }
@@ -464,26 +440,20 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
     return mAssignedAtLevel[lit.index()] == this->decisionLevel() && lastDecision != lit;
   });
 
-  std::vector<int> newClause;
+  std::vector<Literal> newClause;
 
   for (Literal lit : conflict) {
     for (Literal predecessor : preds(lit)) {
       if (auto it = std::ranges::find(reason, predecessor); it != reason.end()) {
-        // FIXME
-        Literal newLit = it->negate();
-        newClause.push_back(newLit.isNegated() ? - newLit.index() : newLit.index());
+        newClause.push_back(it->negate());
       }
     }
   }
 
   // Also add the predecessors of the "conflict" node
-  for (int litData : mClauses[conflictClauseIndex]) {
-    // FIXME
-    Literal conflictLit{litData};
+  for (Literal conflictLit : mClauses[conflictClauseIndex]) {
     if (auto it = std::ranges::find_if(reason, [conflictLit](Literal l) { return l.index() == conflictLit.index();}); it != reason.end()) {
-      // FIXME
-      Literal newLit = it->negate();
-      newClause.push_back(newLit.isNegated() ? - newLit.index() : newLit.index());
+      newClause.push_back(it->negate());
     }
   }
 
@@ -493,7 +463,7 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
     auto last = std::unique(newClause.begin(), newClause.end());
     newClause.erase(last, newClause.end());
 
-    mClauses.push_back(newClause);
+    mClauses.emplace_back(newClause);
   }
 }
 
@@ -518,18 +488,15 @@ void Solver::dumpImplicationGraph(int conflictClauseIndex)
       continue;
     }
 
-    for (int lit : mClauses[clauseIdx]) {
-      int varIdx = lit < 0 ? -lit : lit;
-      if (varIdx != i) {
-        ss << "node_" << varIdx << " -> " << "node_" << i << "[label=\"  " << clauseIdx << "\"];\n";
+    for (Literal lit : mClauses[clauseIdx]) {
+      if (lit.index() != i) {
+        ss << "node_" << lit.index() << " -> " << "node_" << i << "[label=\"  " << clauseIdx << "\"];\n";
       }
     }
   }
 
-  for (int lit : conflictClause) {
-    int finalIdx = lit < 0 ? -lit : lit;
-
-    ss << "node_" << finalIdx << " -> " << "conflict[label=\"" << conflictClauseIndex << "\"];\n";
+  for (Literal lit : conflictClause) {
+    ss << "node_" << lit.index() << " -> " << "conflict[label=\"" << conflictClauseIndex << "\"];\n";
   }
 
   ss << "}";
