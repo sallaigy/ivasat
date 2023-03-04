@@ -2,6 +2,7 @@
 #define IVA_SAT_SOLVER_H
 
 #include <vector>
+#include <algorithm>
 #include <cassert>
 
 
@@ -26,7 +27,7 @@ public:
   Literal(const Literal&) = default;
   Literal& operator=(const Literal&) = default;
 
-  bool operator==(const Literal& other) const = default;
+  auto operator<=>(const Literal& other) const = default;
 
   [[nodiscard]] int index() const
   {
@@ -58,10 +59,12 @@ class Clause
 public:
   explicit Clause(std::vector<Literal> literals)
     : mLiterals(std::move(literals))
-  {}
+  {
+    std::ranges::sort(mLiterals);
+  }
 
-  Clause(const Clause&) = delete;
-  Clause& operator=(const Clause&) = delete;
+  Clause(const Clause&) = default;
+  Clause& operator=(const Clause&) = default;
 
   Literal& operator[](int index)
   {
@@ -78,7 +81,10 @@ public:
   {
     return mLiterals.end();
   }
-
+  unsigned size() const
+  {
+    return mLiterals.size();
+  }
 
 private:
   std::vector<Literal> mLiterals;
