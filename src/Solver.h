@@ -26,6 +26,8 @@ public:
   Literal(const Literal&) = default;
   Literal& operator=(const Literal&) = default;
 
+  bool operator==(const Literal& other) const = default;
+
   [[nodiscard]] int index() const
   {
     return isNegated() ? -mData : mData;
@@ -41,6 +43,12 @@ public:
     return mData < 0;
   }
 
+
+  [[nodiscard]] Literal negate() const
+  {
+    return Literal(-mData);
+  }
+
 private:
   int mData;
 };
@@ -48,9 +56,28 @@ private:
 class Clause
 {
 public:
+  explicit Clause(std::vector<Literal> literals)
+    : mLiterals(std::move(literals))
+  {}
+
   Clause(const Clause&) = delete;
   Clause& operator=(const Clause&) = delete;
 
+  Literal& operator[](int index)
+  {
+    return mLiterals[index];
+  }
+
+  // Iterator support
+  using const_iterator = std::vector<Literal>::const_iterator;
+  const_iterator begin() const
+  {
+    return mLiterals.begin();
+  }
+  const_iterator end() const
+  {
+    return mLiterals.end();
+  }
 
 
 private:

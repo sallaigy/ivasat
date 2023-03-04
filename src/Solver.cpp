@@ -20,6 +20,7 @@ struct Statistics
 {
   unsigned checkedStates = 0;
   unsigned checkedFullCombinations = 0;
+  unsigned learnedClauses = 0;
 };
 
 static Tribool liftBool(bool value)
@@ -141,7 +142,7 @@ private:
 
   ClauseStatus checkClause(const std::vector<int>& clause);
 
-  void analyzeConflict(size_t domSetIndex);
+  void analyzeConflict(size_t trailIndex);
 
   // Some helper methods
   //==----------------------------------------------------------------------==//
@@ -227,6 +228,7 @@ Status Instance::check()
 
   std::cout << "Total checked states: " << solver.statistics().checkedStates << "\n";
   std::cout << "Total checked full combinations: " << solver.statistics().checkedFullCombinations << "\n";
+  std::cout << "Learned clauses: " << solver.statistics().learnedClauses << "\n";
 
   if (status == Status::Sat) {
     mModel = solver.model();
@@ -428,95 +430,71 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
   //  - B contains all successors of `l` where there is a path to the conflict node
   //  - A contains all the rest of nodes
 
-  // TODO: Debug
-  this->dumpImplicationGraph(conflictClauseIndex);
-
   // TODO: There is a more sophisticated linear-time algorithm described in the Minisat paper
 
-  // Given the last decision literal as a flow graph source (decision literals are always zero in-degree), the first
-  // UIP will be the closest dominator of the conflict node.
-  //  D(n_0) = { n_0 }
-  //  D(n) = { n } U intersect(for p in pred(n): D(p))
-  std::vector<bool> seen(mTrail.size() + 1, false);
+  auto preds = [this](Literal lit) {
+    std::vector<Literal> result;
 
-  // The dominator set of each node on the trail
-  std::map<int, int> trailIndices;
-  for (int i = 0; i < mTrail.size(); ++i) {
-    trailIndices[mTrail[i].first] = i;
-  }
+    int literalIndex = lit.index();
+    int impliedByClause = mImplications[literalIndex];
+    if (impliedByClause == UnknownIndex) {
+      return result;
+    }
 
-  std::vector<std::vector<bool>> dominators(mTrail.size() + 1, std::vector<bool>(mTrail.size() + 1, false));
-
-  size_t conflictNodeIdx = mTrail.size();
-
-  auto preds = [this, &trailIndices](size_t domSetIndex) {
-    std::vector<int> result;
-
-    if (domSetIndex == mTrail.size()) {
-
-    } else {
-      int literalIndex = mTrail[domSetIndex].first;
-      int impliedByClause = mImplications[literalIndex];
-      if (impliedByClause == UnknownIndex) {
-        return result;
-      }
-
-      for (int clauseLit: mClauses[impliedByClause]) {
-        int varIdx = clauseLit < 0 ? -clauseLit : clauseLit;
-
-        if (varIdx != literalIndex) {
-          result.push_back(varIdx);
-        }
+    for (int clauseLitIndex : mClauses[impliedByClause]) {
+      // FIXME
+      Literal clauseLit{clauseLitIndex};
+      if (clauseLit.index() != literalIndex) {
+        result.emplace_back(clauseLit.index(), mVariableState[clauseLit.index()] == Tribool::True ? true : false);
       }
     }
 
     return result;
   };
 
-  int lastDecisionIdx = trailIndices[mDecisions.back().first];
-  dominators[lastDecisionIdx][lastDecisionIdx] = true;
+  // We are performing a last UIP cut, meaning that the reason side will contain the last decision literal and all literals
+  // which were assigned on previous decision levels. The conflict side will contain all implied literals of the current
+  // decision level.
+  Literal lastDecision = mDecisions.back();
 
-  // Iterative algorithm for finding dominators
-  for (int i = 0; i < dominators.size(); ++i) {
-    if (i != lastDecisionIdx) {
-      // Initial condition: set all vertices (except the source) to be dominated by every other vertex
-      for (int j = 0; j < dominators.size(); ++j) {
-        dominators[i][j] = true;
+  std::vector<Literal> reason;
+  std::vector<Literal> conflict;
+
+  std::ranges::partition_copy(mTrail, std::back_inserter(conflict), std::back_inserter(reason), [this, lastDecision](Literal lit) {
+    return mAssignedAtLevel[lit.index()] == this->decisionLevel() && lastDecision != lit;
+  });
+
+  std::vector<int> newClause;
+
+  for (Literal lit : conflict) {
+    for (Literal predecessor : preds(lit)) {
+      if (auto it = std::ranges::find(reason, predecessor); it != reason.end()) {
+        // FIXME
+        Literal newLit = it->negate();
+        newClause.push_back(newLit.isNegated() ? - newLit.index() : newLit.index());
       }
     }
   }
 
-  bool changed = true;
-  while (changed) {
-    changed = false;
-    for (int i = 0; i < dominators.size(); ++i) {
-      if (i == lastDecisionIdx) {
-        continue;
-      }
-
-      auto prev = dominators[i];
-      std::vector<bool> predDoms(dominators[i].size(), true);
-      for (int p : preds(i)) {
-        int predDomIdx = trailIndices[p];
-        for (size_t j = 0; j < dominators.size(); ++j) {
-          std::cout << "(" << i << ", " << j << ", " << predDomIdx << ")" << std::endl;
-          predDoms[j] = predDoms[j] && dominators[predDomIdx][j];
-
-        }
-      }
-
-      dominators[i] = predDoms;
-      dominators[i][i] = true;
-
-      if (prev != dominators[i]) {
-        changed = true;
-      }
+  // Also add the predecessors of the "conflict" node
+  for (int litData : mClauses[conflictClauseIndex]) {
+    // FIXME
+    Literal conflictLit{litData};
+    if (auto it = std::ranges::find_if(reason, [conflictLit](Literal l) { return l.index() == conflictLit.index();}); it != reason.end()) {
+      // FIXME
+      Literal newLit = it->negate();
+      newClause.push_back(newLit.isNegated() ? - newLit.index() : newLit.index());
     }
   }
 
-  std::cout << dominators.size() << "\n";
+  if (!newClause.empty()) {
+    mStats.learnedClauses++;
+    std::ranges::sort(newClause);
+    auto last = std::unique(newClause.begin(), newClause.end());
+    newClause.erase(last, newClause.end());
 
-
+    mClauses.push_back(newClause);
+  }
 }
 
 void Solver::dumpImplicationGraph(int conflictClauseIndex)
