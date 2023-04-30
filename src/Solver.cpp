@@ -1,232 +1,11 @@
 #include "Solver.h"
 
-#include "ivasat/ivasat.h"
-
-#include <ranges>
 #include <set>
 #include <algorithm>
 #include <iostream>
-#include <optional>
 #include <cassert>
-#include <map>
-#include <sstream>
 
 using namespace ivasat;
-
-namespace ivasat
-{
-
-struct Statistics
-{
-  unsigned checkedStates = 0;
-  unsigned checkedFullCombinations = 0;
-  unsigned learnedClauses = 0;
-};
-
-static Tribool liftBool(bool value)
-{
-  return value ? Tribool::True : Tribool::False;
-}
-
-class Solver
-{
-  enum class ClauseStatus
-  {
-    Satisfied,
-    Conflicting,
-    Unit,
-    Unresolved
-  };
-
-  static constexpr int UnknownIndex = -1;
-
-public:
-  explicit Solver(const Instance& instance)
-    : mVariableState(instance.numVariables() + 1, Tribool::Unknown),
-    mImplications(instance.numVariables() + 1, UnknownIndex), mAssignedAtLevel(instance.numVariables() + 1, UnknownIndex)
-  {
-    for (const auto& clauseData : instance.clauses()) {
-      std::vector<Literal> literals;
-      for (int litData : clauseData) {
-        literals.emplace_back(litData);
-      }
-      mClauses.emplace_back(literals);
-    }
-  }
-
-  Status check();
-
-  std::vector<bool> model() const;
-
-  const Statistics& statistics() const
-  {
-    return mStats;
-  }
-
-  void assignUnitClause(int variableIndex, bool value, int clauseIndex)
-  {
-    this->assignVariable(variableIndex, value);
-
-    assert(mImplications[variableIndex] == UnknownIndex && "No implications should exists for a freshly assigned unit clause");
-    mImplications[variableIndex] = clauseIndex;
-  }
-
-  void assignVariable(int variableIndex, bool booleanValue)
-  {
-    Tribool value = liftBool(booleanValue);
-    assert(mVariableState[variableIndex] == value || mVariableState[variableIndex] == Tribool::Unknown);
-
-    if (mVariableState[variableIndex] == value) {
-      // This variable value has already been set by a previous propagation, there is nothing to do.
-      return;
-    }
-
-    mVariableState[variableIndex] = value;
-
-    assert(mAssignedAtLevel[variableIndex] == UnknownIndex && "No assignment level should exist for an unassigned variable");
-    mAssignedAtLevel[variableIndex] = this->decisionLevel();
-    mTrail.emplace_back(variableIndex, booleanValue);
-  }
-
-  void undoAssignment(size_t variableIndex)
-  {
-    assert(mVariableState[variableIndex] != Tribool::Unknown && "Cannot undo an assignment that did not take place");
-
-    mVariableState[variableIndex] = Tribool::Unknown;
-    mAssignedAtLevel[variableIndex] = UnknownIndex;
-    mImplications[variableIndex] = UnknownIndex;
-  }
-
-  bool propagateUnitClause(int variableIndex, bool value, size_t clauseIndex);
-
-  void pushDecision(int varIdx, bool value)
-  {
-    mTrailIndices.emplace_back(mTrail.size());
-    mDecisions.emplace_back(varIdx, value);
-    this->assignVariable(varIdx, value);
-  }
-
-  void popDecision()
-  {
-    size_t lastIdx = mTrailIndices.back();
-    mTrailIndices.pop_back();
-
-    for (size_t i = lastIdx; i < mTrail.size(); ++i) {
-      int varIdx = mTrail[i].index();
-      this->undoAssignment(varIdx);
-    }
-    mDecisions.pop_back();
-
-    if (!mTrail.empty()) {
-      mTrail.erase(mTrail.begin() + lastIdx, mTrail.end());
-    }
-  }
-
-  Literal unassignedLiteral(size_t clauseIdx)
-  {
-    for (Literal literal : mClauses[clauseIdx]) {
-      auto currentValue = mVariableState[literal.index()];
-      if (currentValue == Tribool::Unknown) {
-        return literal;
-      }
-    }
-
-    assert(false && "Should be unreachable!");
-    return Literal{0};
-  }
-
-private:
-  bool isValid();
-
-  bool isValidChoice(int index, bool value)
-  {
-    return std::ranges::none_of(mTrail, [&](Literal lit) {
-      return lit.index() == index && lit.value() != value;
-    });
-  }
-
-  void preprocess();
-
-  ClauseStatus checkClause(const Clause& clause);
-
-  void analyzeConflict(size_t trailIndex);
-
-  // Some helper methods
-  //==----------------------------------------------------------------------==//
-  size_t decisionLevel() const
-  {
-    return mDecisions.size();
-  }
-
-  size_t numAssigned() const
-  {
-    assert(std::ranges::count_if(mVariableState, [](auto& v) { return v != Tribool::Unknown; }) == mTrail.size());
-    return mTrail.size();
-  }
-
-  int firstUnassignedIndex(int start) const
-  {
-    for (int i = start; i < mVariableState.size(); ++i) {
-      if (mVariableState[i] == Tribool::Unknown) {
-        return i;
-      }
-    }
-
-    // This really should not happen in a valid solver state
-    assert(false && "There must be an unassigned index in a valid solver state!");
-    return UnknownIndex;
-  }
-
-  // Debug methods
-  //==----------------------------------------------------------------------==//
-
-  /// Write the current implication graph to standard output in DOT format. If the conflicting clause index is not
-  /// `UnknownIndex`, a conflict node will be present in the graph as well.
-  void dumpImplicationGraph(int conflictClauseIndex = UnknownIndex);
-
-  // Fields
-  //==----------------------------------------------------------------------==//
-
-  // Clause database
-  std::vector<Clause> mClauses;
-
-  // Internal solver state
-  std::vector<Tribool> mVariableState;
-  std::vector<Literal> mDecisions;
-
-  // For each assigned variable index, the index of the variable and clause that implied its value.
-  // The value for decided and unassigned variables is going to be -1.
-  std::vector<int> mImplications;
-
-  // For each assigned variable index, the decision level at which it was assigned to a value.
-  // For unassigned variables, the value is going to be -1.
-  std::vector<int> mAssignedAtLevel;
-
-  // List of assignments in chronological order.
-  std::vector<Literal> mTrail;
-  std::vector<size_t> mTrailIndices;
-
-  Statistics mStats;
-};
-
-} // namespace
-
-std::ostream& ivasat::operator<<(std::ostream& os, Status status)
-{
-  switch (status) {
-    case Status::Sat:
-      os << "Sat";
-      break;
-    case Status::Unsat:
-      os << "Unsat";
-      break;
-    case Status::Unknown:
-      os << "Unknown";
-      break;
-  }
-
-  return os;
-}
 
 Status Instance::check()
 {
@@ -271,34 +50,6 @@ Solver::ClauseStatus Solver::checkClause(const Clause& clause)
   return status;
 }
 
-bool Solver::isValid()
-{
-  mStats.checkedStates++;
-  if (mDecisions.size() == mVariableState.size() - 1) {
-    mStats.checkedFullCombinations++;
-  }
-
-  for (size_t i = 0; i < mClauses.size(); ++i) {
-    auto clauseStatus = checkClause(mClauses[i]);
-    if (clauseStatus == ClauseStatus::Conflicting) {
-      this->analyzeConflict(i);
-      return false;
-    }
-
-    if (clauseStatus == ClauseStatus::Unit) {
-      // The clause is not satisfied but the last literal is unassigned, so we can propagate its value
-      Literal lastLiteral = unassignedLiteral(i);
-
-      bool sucessfulPropagation = this->propagateUnitClause(lastLiteral.index(), lastLiteral.value(), i);
-      if (!sucessfulPropagation) {
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
 void Solver::preprocess()
 {
   // Order clauses by size
@@ -317,40 +68,28 @@ Status Solver::check()
   this->preprocess();
 
   // Start search
-  std::pair<int, bool> nextState = {1, true};
+  Literal nextDecision(1, true);
 
   while (true) {
-    auto [currentIndex, currentValue] = nextState;
-
     // Check if the current state is okay
-    bool shouldBacktrack = false;
+    this->pushDecision(nextDecision);
 
-    this->pushDecision(currentIndex, currentValue);
+    mStats.checkedStates++;
+    if (numAssigned() == mVariableState.size() - 1) {
+      mStats.checkedFullCombinations++;
+    }
 
-    if (isValid()) {
+    bool successfulPropagation = this->propagate();
+    if (successfulPropagation) {
       // Is this a complete state?
       if (numAssigned() == mVariableState.size() - 1) {
         return Status::Sat;
       }
 
-      int newState = firstUnassignedIndex(currentIndex);
-      if (isValidChoice(newState, true)) {
-        nextState = {newState, true};
-      } else {
-        nextState = {newState, false};
-      }
-    } else if (currentValue == true) {
-      this->popDecision();
-      // Try again with setting the current index to false
-      nextState = {currentIndex, false};
+      int decisionVariable = pickDecisionVariable(nextDecision.index());
+      nextDecision = {decisionVariable, true};
     } else {
-      shouldBacktrack = true;
-    }
-
-    assert((nextState != std::make_pair(currentIndex, currentValue)) || shouldBacktrack);
-
-    if (shouldBacktrack) {
-      // We will have to backtrack to the closest non-false state
+      // Backtrack to the closest non-false state
       bool hasNextState = false;
       for (auto it = mDecisions.rbegin(); it != mDecisions.rend(); ++it) {
         int decidedVariable = it->index();
@@ -358,7 +97,7 @@ Status Solver::check()
         this->popDecision();
 
         if (previousVariableState == Tribool::True && isValidChoice(decidedVariable, false)) {
-          nextState = {decidedVariable, false};
+          nextDecision = {decidedVariable, false};
           hasNextState = true;
           break;
         }
@@ -371,10 +110,8 @@ Status Solver::check()
   }
 }
 
-bool Solver::propagateUnitClause(int variableIndex, bool value, size_t clauseIndex)
+bool Solver::propagate()
 {
-  this->assignUnitClause(variableIndex, value, clauseIndex);
-
   bool changed = true;
   while (changed) {
     changed = false;
@@ -388,8 +125,8 @@ bool Solver::propagateUnitClause(int variableIndex, bool value, size_t clauseInd
 
       if (clauseStatus == ClauseStatus::Unit) {
         // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
-        Literal lastLiteral = unassignedLiteral(i);
-        this->assignUnitClause(lastLiteral.index(), lastLiteral.value(), i);
+        Literal lastLiteral = unassignedLiteral(clause);
+        this->assignUnitClause(lastLiteral, i);
         changed = true;
       }
     }
@@ -467,43 +204,6 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
   }
 }
 
-void Solver::dumpImplicationGraph(int conflictClauseIndex)
-{
-  const auto& conflictClause = mClauses[conflictClauseIndex];
-  std::stringstream ss;
-
-  ss << "digraph G {\n";
-
-  for (Literal lit : mTrail) {
-    int varIdx = lit.index();
-
-    int assignedAt = mAssignedAtLevel[varIdx];
-    ss << "node_" << varIdx << " [label=\"" << varIdx << ":" << std::boolalpha << lit.value() << "@" << assignedAt << "\"];\n";
-  }
-
-  for (int i = 0; i < mImplications.size(); ++i) {
-    int clauseIdx = mImplications[i];
-
-    if (clauseIdx == UnknownIndex) {
-      continue;
-    }
-
-    for (Literal lit : mClauses[clauseIdx]) {
-      if (lit.index() != i) {
-        ss << "node_" << lit.index() << " -> " << "node_" << i << "[label=\"  " << clauseIdx << "\"];\n";
-      }
-    }
-  }
-
-  for (Literal lit : conflictClause) {
-    ss << "node_" << lit.index() << " -> " << "conflict[label=\"" << conflictClauseIndex << "\"];\n";
-  }
-
-  ss << "}";
-
-  std::cout << ss.str() << std::endl;
-}
-
 std::vector<bool> Solver::model() const
 {
   std::vector<bool> result;
@@ -514,6 +214,100 @@ std::vector<bool> Solver::model() const
   }
 
   return result;
+}
+
+void Solver::assignVariable(Literal literal)
+{
+  int variableIndex = literal.index();
+  Tribool value = liftBool(literal.value());
+  assert(mVariableState[variableIndex] == Tribool::Unknown && "Can only assign a previously unset variable!");
+
+  mVariableState[variableIndex] = value;
+
+  assert(mAssignedAtLevel[variableIndex] == UnknownIndex && "No assignment level should exist for an unassigned variable");
+  mAssignedAtLevel[variableIndex] = this->decisionLevel();
+  mTrail.push_back(literal);
+}
+
+Solver::Solver(const Instance& instance)
+  : mVariableState(instance.numVariables() + 1, Tribool::Unknown),
+    mImplications(instance.numVariables() + 1, UnknownIndex),
+    mAssignedAtLevel(instance.numVariables() + 1, UnknownIndex)
+{
+  mClauses.reserve(instance.clauses().size());
+  for (const auto& clauseData : instance.clauses()) {
+    std::vector<Literal> literals;
+    for (int litData : clauseData) {
+      literals.emplace_back(litData);
+    }
+    mClauses.emplace_back(literals);
+  }
+}
+
+void Solver::popDecision()
+{
+  size_t lastIdx = mTrailIndices.back();
+  mTrailIndices.pop_back();
+
+  for (size_t i = lastIdx; i < mTrail.size(); ++i) {
+    int varIdx = mTrail[i].index();
+    this->undoAssignment(varIdx);
+  }
+  mDecisions.pop_back();
+
+  if (!mTrail.empty()) {
+    mTrail.erase(mTrail.begin() + lastIdx, mTrail.end());
+  }
+}
+
+void Solver::popDecisionUntil(int varIdx)
+{
+  int assignedAt = mAssignedAtLevel[varIdx];
+  assert(assignedAt != UnknownIndex && "Cannot pop a decision which did not take place");
+  assert(assignedAt <= decisionLevel() && "Cannot pop a decision which did not take place");
+
+  size_t decisionsToPop = decisionLevel() - assignedAt;
+  for (unsigned i = 0; i <= decisionsToPop; ++i) {
+    this->popDecision();
+  }
+}
+
+void Solver::undoAssignment(size_t variableIndex)
+{
+  assert(mVariableState[variableIndex] != Tribool::Unknown && "Cannot undo an assignment that did not take place");
+
+  mVariableState[variableIndex] = Tribool::Unknown;
+  mAssignedAtLevel[variableIndex] = UnknownIndex;
+  mImplications[variableIndex] = UnknownIndex;
+}
+
+void Solver::pushDecision(Literal literal)
+{
+  mTrailIndices.emplace_back(mTrail.size());
+  mDecisions.emplace_back(literal);
+  this->assignVariable(literal);
+}
+
+void Solver::assignUnitClause(Literal literal, int clauseIndex)
+{
+  int variableIndex = literal.index();
+  assert(mImplications[variableIndex] == UnknownIndex && "No implications should exists for a freshly assigned unit clause");
+
+  this->assignVariable(literal);
+  mImplications[variableIndex] = clauseIndex;
+}
+
+int Solver::pickDecisionVariable(int start) const
+{
+  for (int i = start; i < mVariableState.size(); ++i) {
+    if (mVariableState[i] == Tribool::Unknown) {
+      return i;
+    }
+  }
+
+  // This really should not happen in a valid solver state
+  assert(false && "There must be an unassigned index in a valid solver state!");
+  return UnknownIndex;
 }
 
 std::vector<bool> Instance::model() const
