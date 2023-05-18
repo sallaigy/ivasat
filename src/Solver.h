@@ -120,6 +120,7 @@ class Solver
   {
     unsigned checkedStates = 0;
     unsigned checkedFullCombinations = 0;
+    unsigned propagations = 0;
     unsigned learnedClauses = 0;
   };
 
@@ -131,11 +132,6 @@ public:
   Status check();
 
   std::vector<bool> model() const;
-
-  const Statistics& statistics() const
-  {
-    return mStats;
-  }
 
   void assignUnitClause(Literal literal, int clauseIndex);
 
@@ -164,6 +160,8 @@ public:
     assert(false && "Should be unreachable!");
     return Literal{0};
   }
+
+  void dumpStats(std::ostream& os) const;
 
 private:
   bool isValidChoice(int index, bool value)
