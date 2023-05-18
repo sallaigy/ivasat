@@ -73,6 +73,20 @@ TEST(SolverTest, empty_instance)
   EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
+TEST(SolverTest, empty_single_clause)
+{
+  Instance inst(4, {{}});
+
+  EXPECT_TRUE(assertSat(inst, Status::Unsat));
+}
+
+TEST(SolverTest, empty_clause)
+{
+  Instance inst(4, {{}, {1, 2, 3, 4}});
+
+  EXPECT_TRUE(assertSat(inst, Status::Unsat));
+}
+
 TEST(SolverTest, negated_first_variable)
 {
   // (~x) AND (y)
@@ -166,6 +180,25 @@ TEST(SolverTest, failed_literal_from_complex_sat)
   });
 
   EXPECT_TRUE(assertSat(inst, Status::Sat));
+}
+
+TEST(SolverTest, unit_clause)
+{
+  Instance inst(3, {
+    {1},
+    {2},
+    {-1, -2, 3}
+  });
+}
+
+TEST(SolverTest, unit_clause_unsat)
+{
+  Instance inst(3, {
+    {1},
+    {2},
+    {-3},
+    {-1, -2, 3}
+  });
 }
 
 TEST(SolverTest, wrong_unsat)

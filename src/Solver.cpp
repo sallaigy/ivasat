@@ -12,9 +12,7 @@ Status Instance::check()
   Solver solver{*this};
   auto status = solver.check();
 
-  std::cout << "Total checked states: " << solver.statistics().checkedStates << "\n";
-  std::cout << "Total checked full combinations: " << solver.statistics().checkedFullCombinations << "\n";
-  std::cout << "Learned clauses: " << solver.statistics().learnedClauses << "\n";
+  solver.dumpStats(std::cout);
 
   if (status == Status::Sat) {
     mModel = solver.model();
@@ -67,8 +65,14 @@ Status Solver::check()
 
   this->preprocess();
 
+  if (bool propagationResult = this->propagate(); !propagationResult) {
+    return Status::Unsat;
+  } else if (numAssigned() == mVariableState.size() - 1) {
+    return Status::Sat;
+  }
+
   // Start search
-  Literal nextDecision(1, true);
+  Literal nextDecision(pickDecisionVariable(1), true);
 
   while (true) {
     // Check if the current state is okay
@@ -113,6 +117,7 @@ Status Solver::check()
 bool Solver::propagate()
 {
   bool changed = true;
+  std::deque<std::pair<Literal, int>> queue;
   while (changed) {
     changed = false;
     for (size_t i = 0; i < mClauses.size(); ++i) {
@@ -126,9 +131,17 @@ bool Solver::propagate()
       if (clauseStatus == ClauseStatus::Unit) {
         // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
         Literal lastLiteral = unassignedLiteral(clause);
-        this->assignUnitClause(lastLiteral, i);
-        changed = true;
+        queue.emplace_back(lastLiteral, i);
       }
+    }
+
+    while (!queue.empty()) {
+      auto& [literal, clauseIdx] = queue.front();
+      if (mVariableState[literal.index()] == Tribool::Unknown) {
+        this->assignUnitClause(literal, clauseIdx);
+      }
+      queue.pop_front();
+      changed = true;
     }
   }
 
@@ -164,6 +177,11 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
 
     return result;
   };
+
+  // If we are propagating top-level, there is no last decision
+  if (mDecisions.empty()) {
+    return;
+  }
 
   // We are performing a last UIP cut, meaning that the reason side will contain the last decision literal and all literals
   // which were assigned on previous decision levels. The conflict side will contain all implied literals of the current
@@ -290,6 +308,7 @@ void Solver::pushDecision(Literal literal)
 
 void Solver::assignUnitClause(Literal literal, int clauseIndex)
 {
+  mStats.propagations++;
   int variableIndex = literal.index();
   assert(mImplications[variableIndex] == UnknownIndex && "No implications should exists for a freshly assigned unit clause");
 
@@ -305,7 +324,6 @@ int Solver::pickDecisionVariable(int start) const
     }
   }
 
-  // This really should not happen in a valid solver state
   assert(false && "There must be an unassigned index in a valid solver state!");
   return UnknownIndex;
 }
