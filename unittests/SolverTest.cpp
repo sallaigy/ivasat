@@ -73,6 +73,14 @@ TEST(SolverTest, empty_instance)
   EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
+
+TEST(SolverTest, empty_clause)
+{
+  Instance inst(4, {{}});
+
+  EXPECT_TRUE(assertSat(inst, Status::Unsat));
+}
+
 TEST(SolverTest, negated_first_variable)
 {
   // (~x) AND (y)
@@ -248,4 +256,32 @@ TEST(SolverTest, wrong_unsat_4)
   });
 
   EXPECT_TRUE(assertSat(inst, Status::Sat));
+}
+
+TEST(SolverTest, wrong_sat)
+{
+  std::string instanceStr = R"(
+p cnf 14 17
+-12 0
+-2 -4 0
+-2 -11 0
+-13 0
+-6 0
+-7 0
+-7 0
+-10 0
+-11 0
+-14 0
+-14 0
+1 0
+3 0
+5 0
+8 0
+9 0
+11 0
+)";
+  std::stringstream ss(instanceStr);
+
+  auto inst = parseDimacs(ss);
+  EXPECT_TRUE(assertSat(*inst, Status::Unsat));
 }

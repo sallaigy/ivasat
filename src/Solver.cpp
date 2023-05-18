@@ -2,7 +2,6 @@
 
 #include <set>
 #include <algorithm>
-#include <iostream>
 #include <cassert>
 
 using namespace ivasat;
@@ -12,9 +11,7 @@ Status Instance::check()
   Solver solver{*this};
   auto status = solver.check();
 
-  std::cout << "Total checked states: " << solver.statistics().checkedStates << "\n";
-  std::cout << "Total checked full combinations: " << solver.statistics().checkedFullCombinations << "\n";
-  std::cout << "Learned clauses: " << solver.statistics().learnedClauses << "\n";
+  solver.dumpStatistics();
 
   if (status == Status::Sat) {
     mModel = solver.model();
@@ -32,10 +29,8 @@ Solver::ClauseStatus Solver::checkClause(const Clause& clause)
     if (mVariableState[literal.index()] == Tribool::Unknown) {
       if (status == ClauseStatus::Unit || status == ClauseStatus::Unresolved) {
         status = ClauseStatus::Unresolved;
-        continue;
       } else {
         status = ClauseStatus::Unit;
-        continue;
       }
     } else {
       variableValue = mVariableState[literal.index()];
@@ -56,6 +51,13 @@ void Solver::preprocess()
   std::ranges::sort(mClauses, [](auto& l, auto& r) {
     return l.size() < r.size();
   });
+
+  // Set up watches
+  for (int clauseIdx = 0; clauseIdx < mClauses.size(); ++clauseIdx) {
+    for (Literal lit : mClauses[clauseIdx]) {
+      mWatches[lit.index()].push_back(clauseIdx);
+    }
+  }
 }
 
 Status Solver::check()
@@ -63,6 +65,10 @@ Status Solver::check()
   if (mClauses.empty()) {
     std::ranges::for_each(mVariableState, [](auto& v) { v = Tribool::True; });
     return Status::Sat;
+  }
+
+  if (std::ranges::any_of(mClauses, [](const Clause& clause) { return clause.empty(); })) {
+    return Status::Unsat;
   }
 
   this->preprocess();
@@ -112,9 +118,15 @@ Status Solver::check()
 
 bool Solver::propagate()
 {
-  bool changed = true;
-  while (changed) {
-    changed = false;
+#if 0
+  std::vector<std::pair<Literal, size_t>> propagationQueue;
+  propagationQueue.emplace_back(Literal{variableIndex, value}, clauseIndex);
+
+  while (!propagationQueue.empty()) {
+    auto [literal, reasonClauseIdx] = propagationQueue.back();
+    propagationQueue.pop_back();
+    this->assignUnitClause(literal.index(), literal.value(), reasonClauseIdx);
+
     for (size_t i = 0; i < mClauses.size(); ++i) {
       const auto& clause = mClauses[i];
       auto clauseStatus = checkClause(clause);
@@ -126,13 +138,45 @@ bool Solver::propagate()
       if (clauseStatus == ClauseStatus::Unit) {
         // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
         Literal lastLiteral = unassignedLiteral(clause);
-        this->assignUnitClause(lastLiteral, i);
-        changed = true;
+        propagationQueue.emplace_back(lastLiteral, i);
       }
     }
   }
 
   return true;
+#else
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    const std::vector<int>& clausesToCheck = mWatches[mLastChangedVariable];
+    for (int clauseIdx : clausesToCheck) {
+      const auto& clause = mClauses[clauseIdx];
+      auto clauseStatus = checkClause(clause);
+      if (clauseStatus == ClauseStatus::Conflicting) {
+        this->analyzeConflict(clauseIdx);
+        mPropagationQueue.clear();
+        return false;
+      }
+
+      if (clauseStatus == ClauseStatus::Unit) {
+        // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
+        Literal lastLiteral = unassignedLiteral(clause);
+        mPropagationQueue.emplace_back(lastLiteral, clauseIdx);
+      }
+    }
+
+    if (!mPropagationQueue.empty()) {
+      auto& [literal, clauseIdx] = mPropagationQueue.front();
+      if (mVariableState[literal.index()] == Tribool::Unknown) {
+        this->assignUnitClause(literal, clauseIdx);
+      }
+      mPropagationQueue.pop_front();
+      changed = true;
+    }
+  }
+
+  return true;
+#endif
 }
 
 void Solver::analyzeConflict(size_t conflictClauseIndex)
@@ -196,11 +240,7 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
 
   if (!newClause.empty()) {
     mStats.learnedClauses++;
-    std::ranges::sort(newClause);
-    auto last = std::unique(newClause.begin(), newClause.end());
-    newClause.erase(last, newClause.end());
-
-    mClauses.emplace_back(newClause);
+    this->addClause(newClause);
   }
 }
 
@@ -227,10 +267,12 @@ void Solver::assignVariable(Literal literal)
   assert(mAssignedAtLevel[variableIndex] == UnknownIndex && "No assignment level should exist for an unassigned variable");
   mAssignedAtLevel[variableIndex] = this->decisionLevel();
   mTrail.push_back(literal);
+  mLastChangedVariable = literal.index();
 }
 
 Solver::Solver(const Instance& instance)
-  : mVariableState(instance.numVariables() + 1, Tribool::Unknown),
+  : mWatches(instance.numVariables() + 1, std::vector<int>{}),
+    mVariableState(instance.numVariables() + 1, Tribool::Unknown),
     mImplications(instance.numVariables() + 1, UnknownIndex),
     mAssignedAtLevel(instance.numVariables() + 1, UnknownIndex)
 {
@@ -286,6 +328,7 @@ void Solver::pushDecision(Literal literal)
   mTrailIndices.emplace_back(mTrail.size());
   mDecisions.emplace_back(literal);
   this->assignVariable(literal);
+  mStats.decisions++;
 }
 
 void Solver::assignUnitClause(Literal literal, int clauseIndex)
@@ -295,6 +338,15 @@ void Solver::assignUnitClause(Literal literal, int clauseIndex)
 
   this->assignVariable(literal);
   mImplications[variableIndex] = clauseIndex;
+}
+
+void Solver::addClause(const std::vector<Literal>& literals)
+{
+  Clause& clause = mClauses.emplace_back(literals);
+  // Set up watches
+  for (Literal lit : clause) {
+    mWatches[lit.index()].push_back(mClauses.size() - 1);
+  }
 }
 
 int Solver::pickDecisionVariable(int start) const

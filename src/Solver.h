@@ -62,7 +62,11 @@ public:
   explicit Clause(std::vector<Literal> literals)
     : mLiterals(std::move(literals))
   {
-    std::ranges::sort(mLiterals);
+    // Normalize literal order
+    std::ranges::sort(literals);
+    // Remove possible duplicates
+    auto last = std::unique(literals.begin(), literals.end());
+    literals.erase(last, literals.end());
   }
 
   Clause(const Clause&) = default;
@@ -86,6 +90,10 @@ public:
   size_t size() const
   {
     return mLiterals.size();
+  }
+  bool empty() const
+  {
+    return mLiterals.empty();
   }
 
 private:
@@ -121,6 +129,7 @@ class Solver
     unsigned checkedStates = 0;
     unsigned checkedFullCombinations = 0;
     unsigned learnedClauses = 0;
+    unsigned decisions = 0;
   };
 
   static constexpr int UnknownIndex = -1;
@@ -131,6 +140,8 @@ public:
   Status check();
 
   std::vector<bool> model() const;
+
+  void dumpStatistics() const;
 
   const Statistics& statistics() const
   {
@@ -179,6 +190,8 @@ private:
 
   void analyzeConflict(size_t trailIndex);
 
+  void addClause(const std::vector<Literal>& literals);
+
   // Some helper methods
   //==----------------------------------------------------------------------==//
   size_t decisionLevel() const
@@ -207,6 +220,11 @@ private:
   // Clause database
   std::vector<Clause> mClauses;
 
+  // For each variable index, the list of clause indices that have to be inspected if the variable gets updated.
+  std::vector<std::vector<int>> mWatches;
+  std::deque<std::pair<Literal, int>> mPropagationQueue;
+  int mLastChangedVariable = 0;
+
   // Internal solver state
   std::vector<Tribool> mVariableState;
   std::vector<Literal> mDecisions;
@@ -225,7 +243,6 @@ private:
 
   Statistics mStats;
 };
-
 
 } // namespace ivasat
 
