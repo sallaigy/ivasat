@@ -204,6 +204,7 @@ private:
 
   // Clause database
   std::vector<Clause> mClauses;
+  std::vector<std::vector<int>> mWatches;
 
   // Internal solver state
   std::vector<Tribool> mVariableState;

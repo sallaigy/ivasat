@@ -54,6 +54,15 @@ void Solver::preprocess()
   std::ranges::sort(mClauses, [](auto& l, auto& r) {
     return l.size() < r.size();
   });
+
+  // Add clauses to watches
+  mWatches[0].reserve(mClauses.size());
+  for (int i = 0; i < mClauses.size(); ++i) {
+    for (Literal lit : mClauses[i]) {
+      mWatches[lit.index()].push_back(i);
+    }
+    mWatches[0].push_back(i);
+  }
 }
 
 Status Solver::check()
@@ -116,11 +125,19 @@ Status Solver::check()
 
 bool Solver::propagate()
 {
-  bool changed = true;
-  std::deque<std::pair<Literal, int>> queue;
-  while (changed) {
-    changed = false;
-    for (size_t i = 0; i < mClauses.size(); ++i) {
+  std::deque<int> queue;
+  if (mDecisions.empty()) {
+    // If we are propagating top level, we want to check all clauses
+    queue.emplace_back(0);
+  } else {
+    queue.emplace_back(mDecisions.back().index());
+  }
+
+  while (!queue.empty()) {
+    int lastAssigned = queue.front();
+    const std::vector<int>& clausesToCheck = mWatches[lastAssigned];
+    queue.pop_front();
+    for (int i : clausesToCheck) {
       const auto& clause = mClauses[i];
       auto clauseStatus = checkClause(clause);
       if (clauseStatus == ClauseStatus::Conflicting) {
@@ -131,17 +148,9 @@ bool Solver::propagate()
       if (clauseStatus == ClauseStatus::Unit) {
         // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
         Literal lastLiteral = unassignedLiteral(clause);
-        queue.emplace_back(lastLiteral, i);
+        this->assignUnitClause(lastLiteral, i);
+        queue.emplace_back(lastLiteral.index());
       }
-    }
-
-    while (!queue.empty()) {
-      auto& [literal, clauseIdx] = queue.front();
-      if (mVariableState[literal.index()] == Tribool::Unknown) {
-        this->assignUnitClause(literal, clauseIdx);
-      }
-      queue.pop_front();
-      changed = true;
     }
   }
 
@@ -219,6 +228,10 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
     newClause.erase(last, newClause.end());
 
     mClauses.emplace_back(newClause);
+    for (Literal lit : newClause) {
+      mWatches[lit.index()].push_back(mClauses.size() - 1);
+    }
+    mWatches[0].push_back(mClauses.size() - 1);
   }
 }
 
@@ -248,7 +261,8 @@ void Solver::assignVariable(Literal literal)
 }
 
 Solver::Solver(const Instance& instance)
-  : mVariableState(instance.numVariables() + 1, Tribool::Unknown),
+  : mWatches(instance.numVariables() + 1, std::vector<int>{}),
+    mVariableState(instance.numVariables() + 1, Tribool::Unknown),
     mImplications(instance.numVariables() + 1, UnknownIndex),
     mAssignedAtLevel(instance.numVariables() + 1, UnknownIndex)
 {
