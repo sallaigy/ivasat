@@ -282,3 +282,38 @@ TEST(SolverTest, wrong_unsat_4)
 
   EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
+
+TEST(SolverTest, simplify_top_level_with_learned_clause)
+{
+  std::stringstream ss(R"(
+p cnf 7 7
+-2 0
+4 6 0
+-4 7 0
+-4 -7 0
+3 -6 0
+-1 5 0
+-3 -6 0
+  )");
+  auto inst = parseDimacs(ss);
+
+  EXPECT_TRUE(assertSat(*inst, Status::Unsat));
+}
+TEST(SolverTest, learning_contradictory_unit_clause)
+{
+  std::stringstream ss(R"(
+p cnf 10 9
+4 5 0
+4 -5 0
+-4 9 0
+7 8 0
+-3 0
+1 2 0
+6 8 0
+-8 -9 0
+-6 -7 0
+  )");
+  auto inst = parseDimacs(ss);
+
+  EXPECT_TRUE(assertSat(*inst, Status::Unsat));
+}

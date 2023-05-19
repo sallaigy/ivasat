@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cassert>
 #include <queue>
+#include <set>
 
 namespace ivasat
 {
@@ -88,6 +89,18 @@ public:
     return mLiterals.size();
   }
 
+  // Manipulation
+  void remove(Literal lit)
+  {
+    mLiterals.erase(std::remove(mLiterals.begin(), mLiterals.end(), lit), mLiterals.end());
+  }
+
+  template<class Predicate>
+  void remove(Predicate&& pred)
+  {
+    mLiterals.erase(std::remove_if(mLiterals.begin(), mLiterals.end(), pred), mLiterals.end());
+  }
+
 private:
   std::vector<Literal> mLiterals;
 };
@@ -141,6 +154,12 @@ public:
 
   bool propagate();
 
+  /// Simplify the clause database, propagating unit clauses and removing propagated values.
+  /// \return False if the simplified clause database contains an empty clause, otherwise true.
+  [[nodiscard]] bool simplify();
+
+  [[nodiscard]] bool reduceDatabase();
+
   void pushDecision(Literal literal);
 
   void popDecision();
@@ -172,6 +191,7 @@ private:
   }
 
   void preprocess();
+  void resetWatches();
 
   ClauseStatus checkClause(const Clause& clause);
 
@@ -179,9 +199,9 @@ private:
 
   // Some helper methods
   //==----------------------------------------------------------------------==//
-  size_t decisionLevel() const
+  int decisionLevel() const
   {
-    return mDecisions.size();
+    return static_cast<int>(mDecisions.size());
   }
 
   size_t numAssigned() const

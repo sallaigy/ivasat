@@ -55,13 +55,20 @@ void Solver::preprocess()
     return l.size() < r.size();
   });
 
-  // Add clauses to watches
-  mWatches[0].reserve(mClauses.size());
-  for (int i = 0; i < mClauses.size(); ++i) {
-    for (Literal lit : mClauses[i]) {
-      mWatches[lit.index()].push_back(i);
+  this->resetWatches();
+
+  // Find unused variables and set them to true
+  std::vector<int> usages(mVariableState.size(), 0);
+  for (const Clause& clause : mClauses) {
+    for (Literal lit : clause) {
+      usages[lit.index()] += 1;
     }
-    mWatches[0].push_back(i);
+  }
+
+  for (int i = 1; i < usages.size(); ++i) {
+    if (usages[i] == 0) {
+      this->assignVariable(Literal{i, true});
+    }
   }
 }
 
@@ -74,7 +81,7 @@ Status Solver::check()
 
   this->preprocess();
 
-  if (bool propagationResult = this->propagate(); !propagationResult) {
+  if (bool propagationResult = this->simplify(); !propagationResult) {
     return Status::Unsat;
   } else if (numAssigned() == mVariableState.size() - 1) {
     return Status::Sat;
@@ -102,14 +109,31 @@ Status Solver::check()
       int decisionVariable = pickDecisionVariable(nextDecision.index());
       nextDecision = {decisionVariable, true};
     } else {
-      // Backtrack to the closest non-false state
+      // Backtrack to the closest non-false state.
       bool hasNextState = false;
       for (auto it = mDecisions.rbegin(); it != mDecisions.rend(); ++it) {
         int decidedVariable = it->index();
         Tribool previousVariableState = mVariableState[decidedVariable];
         this->popDecision();
 
-        if (previousVariableState == Tribool::True && isValidChoice(decidedVariable, false)) {
+        if (decisionLevel() == 0) {
+          // If we backtracked back to the top level, try to simplify the clause database.
+          if (bool simplifyResult = this->simplify(); !simplifyResult) {
+            return Status::Unsat;
+          } else if (numAssigned() == mVariableState.size() - 1) {
+            return Status::Sat;
+          }
+
+          int newDecisionVariable = pickDecisionVariable(decidedVariable);
+          if (newDecisionVariable != decidedVariable) {
+            nextDecision = {newDecisionVariable, true};
+            hasNextState = true;
+            break;
+          }
+        }
+
+        bool possibleValue = previousVariableState != Tribool::True;
+        if (previousVariableState == Tribool::True && isValidChoice(decidedVariable, possibleValue)) {
           nextDecision = {decidedVariable, false};
           hasNextState = true;
           break;
@@ -229,9 +253,9 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
 
     mClauses.emplace_back(newClause);
     for (Literal lit : newClause) {
-      mWatches[lit.index()].push_back(mClauses.size() - 1);
+      mWatches[lit.index()].push_back(static_cast<int>(mClauses.size() - 1));
     }
-    mWatches[0].push_back(mClauses.size() - 1);
+    mWatches[0].push_back(static_cast<int>(mClauses.size() - 1));
   }
 }
 
@@ -328,6 +352,52 @@ void Solver::assignUnitClause(Literal literal, int clauseIndex)
 
   this->assignVariable(literal);
   mImplications[variableIndex] = clauseIndex;
+}
+
+bool Solver::simplify()
+{
+  assert(mDecisions.empty() && "Simplification should only be called on the top level!");
+
+  if (!this->propagate()) {
+    return false;
+  }
+
+  // Delete all clauses which are true
+  mClauses.erase(std::remove_if(mClauses.begin(), mClauses.end(), [this](const Clause& clause) {
+    return std::ranges::any_of(clause, [this](Literal lit) {
+      return mVariableState[lit.index()] == liftBool(lit.value());
+    });
+  }), mClauses.end());
+
+  // Remove all literals from clauses that are false
+  for (Clause& clause : mClauses) {
+    clause.remove([this](Literal lit) {
+      Tribool assignedValue = mVariableState[lit.index()];
+      return assignedValue != Tribool::Unknown && liftBool(lit.value()) != assignedValue;
+    });
+  }
+
+  assert(std::ranges::none_of(mClauses, [](Clause& c) { return c.size() == 0; })
+    && "There should be no empty clauses left after simplification!");
+
+  this->resetWatches();
+
+  return true;
+}
+
+void Solver::resetWatches()
+{
+  std::ranges::for_each(mWatches, [](std::vector<int>& v) {
+    v.clear();
+  });
+
+  mWatches[0].reserve(mClauses.size());
+  for (int i = 0; i < mClauses.size(); ++i) {
+    for (Literal lit : mClauses[i]) {
+      mWatches[lit.index()].push_back(i);
+    }
+    mWatches[0].push_back(i);
+  }
 }
 
 int Solver::pickDecisionVariable(int start) const
