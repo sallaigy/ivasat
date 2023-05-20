@@ -299,6 +299,7 @@ p cnf 7 7
 
   EXPECT_TRUE(assertSat(*inst, Status::Unsat));
 }
+
 TEST(SolverTest, learning_contradictory_unit_clause)
 {
   std::stringstream ss(R"(
@@ -313,6 +314,28 @@ p cnf 10 9
 -8 -9 0
 -6 -7 0
   )");
+  auto inst = parseDimacs(ss);
+
+  EXPECT_TRUE(assertSat(*inst, Status::Unsat));
+}
+
+
+TEST(SolverTest, learning_unit_clause_backjump_to_top)
+{
+  std::stringstream ss(R"(
+p cnf 12 11
+-2 4 0
+5 7 0
+5 -7 0
+-5 11 0
+9 10 0
+1 3 0
+6 8 0
+-3 -6 0
+-1 8 10 0
+-10 -11 0
+-8 -9 0
+)");
   auto inst = parseDimacs(ss);
 
   EXPECT_TRUE(assertSat(*inst, Status::Unsat));
