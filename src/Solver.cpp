@@ -109,7 +109,24 @@ Status Solver::check()
       int decisionVariable = pickDecisionVariable(nextDecision.index());
       nextDecision = {decisionVariable, true};
     } else {
-      // Backtrack to the closest non-false state.
+      // We learned a new clause, check the backtracking level
+      Clause& learnedClause = mClauses.back();
+      int backtrackLevel = -1;
+      if (learnedClause.size() == 1) {
+        // If a unit clause is learned, we want to jump back to the top level and propagate it.
+        backtrackLevel = 1;
+      } else {
+        for (Literal lit: learnedClause) {
+          if (lit.index() != mDecisions.back().index()) {
+            backtrackLevel =
+            backtrackLevel >= mAssignedAtLevel[lit.index()] ? backtrackLevel : mAssignedAtLevel[lit.index()];
+          }
+        }
+      }
+
+      if (backtrackLevel != -1) {
+        this->popDecisionUntil(backtrackLevel + 1);
+      }
       bool hasNextState = false;
       for (auto it = mDecisions.rbegin(); it != mDecisions.rend(); ++it) {
         int decidedVariable = it->index();
@@ -181,7 +198,7 @@ bool Solver::propagate()
   return true;
 }
 
-void Solver::analyzeConflict(size_t conflictClauseIndex)
+void Solver::analyzeConflict(int conflictClauseIndex)
 {
   // Find a cut of the implication graph through a unique implication point (UIP).
   // The UIP is a node at decision level `d` such that every path from the decision variable at level `d` to the
@@ -192,30 +209,27 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
   //  - A contains all the rest of nodes
 
   // TODO: There is a more sophisticated linear-time algorithm described in the Minisat paper
-
-  auto preds = [this](Literal lit) {
-    std::vector<Literal> result;
-
-    int literalIndex = lit.index();
-    int impliedByClause = mImplications[literalIndex];
-    if (impliedByClause == UnknownIndex) {
-      return result;
-    }
-
-    for (Literal clauseLit : mClauses[impliedByClause]) {
-      if (clauseLit.index() != literalIndex) {
-        result.emplace_back(clauseLit.index(), mVariableState[clauseLit.index()] == Tribool::True ? true : false);
-      }
-    }
-
-    return result;
-  };
-
   // If we are propagating top-level, there is no last decision
   if (mDecisions.empty()) {
     return;
   }
 
+  std::vector<Literal> newClause = this->lastUniqueImplicationPointCut(conflictClauseIndex);
+  if (!newClause.empty()) {
+    mStats.learnedClauses++;
+    std::ranges::sort(newClause);
+    newClause.erase(std::unique(newClause.begin(), newClause.end()), newClause.end());
+
+    mClauses.emplace_back(newClause);
+    for (Literal lit : newClause) {
+      mWatches[lit.index()].push_back(static_cast<int>(mClauses.size() - 1));
+    }
+    mWatches[0].push_back(static_cast<int>(mClauses.size() - 1));
+  }
+}
+
+std::vector<Literal> Solver::lastUniqueImplicationPointCut(int conflictClauseIndex)
+{
   // We are performing a last UIP cut, meaning that the reason side will contain the last decision literal and all literals
   // which were assigned on previous decision levels. The conflict side will contain all implied literals of the current
   // decision level.
@@ -231,7 +245,8 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
   std::vector<Literal> newClause;
 
   for (Literal lit : conflict) {
-    for (Literal predecessor : preds(lit)) {
+    std::vector<Literal> preds = implyingPredecessors(lit);
+    for (Literal predecessor : preds) {
       if (auto it = std::ranges::find(reason, predecessor); it != reason.end()) {
         newClause.push_back(it->negate());
       }
@@ -245,18 +260,26 @@ void Solver::analyzeConflict(size_t conflictClauseIndex)
     }
   }
 
-  if (!newClause.empty()) {
-    mStats.learnedClauses++;
-    std::ranges::sort(newClause);
-    auto last = std::unique(newClause.begin(), newClause.end());
-    newClause.erase(last, newClause.end());
+  return newClause;
+}
 
-    mClauses.emplace_back(newClause);
-    for (Literal lit : newClause) {
-      mWatches[lit.index()].push_back(static_cast<int>(mClauses.size() - 1));
-    }
-    mWatches[0].push_back(static_cast<int>(mClauses.size() - 1));
+std::vector<Literal> Solver::implyingPredecessors(Literal lit)
+{
+  std::vector<Literal> result;
+
+  int literalIndex = lit.index();
+  int impliedByClause = mImplications[literalIndex];
+  if (impliedByClause == UnknownIndex) {
+    return result;
   }
+
+  for (Literal clauseLit : mClauses[impliedByClause]) {
+    if (clauseLit.index() != literalIndex) {
+      result.emplace_back(clauseLit.index(), mVariableState[clauseLit.index()] == Tribool::True);
+    }
+  }
+
+  return result;
 }
 
 std::vector<bool> Solver::model() const
@@ -302,10 +325,10 @@ Solver::Solver(const Instance& instance)
 
 void Solver::popDecision()
 {
-  size_t lastIdx = mTrailIndices.back();
+  int lastIdx = mTrailIndices.back();
   mTrailIndices.pop_back();
 
-  for (size_t i = lastIdx; i < mTrail.size(); ++i) {
+  for (int i = lastIdx; i < mTrail.size(); ++i) {
     int varIdx = mTrail[i].index();
     this->undoAssignment(varIdx);
   }
@@ -316,13 +339,11 @@ void Solver::popDecision()
   }
 }
 
-void Solver::popDecisionUntil(int varIdx)
+void Solver::popDecisionUntil(int level)
 {
-  int assignedAt = mAssignedAtLevel[varIdx];
-  assert(assignedAt != UnknownIndex && "Cannot pop a decision which did not take place");
-  assert(assignedAt <= decisionLevel() && "Cannot pop a decision which did not take place");
+  assert(level <= decisionLevel() && "Cannot pop a decision which did not take place");
 
-  size_t decisionsToPop = decisionLevel() - assignedAt;
+  size_t decisionsToPop = decisionLevel() - level;
   for (unsigned i = 0; i <= decisionsToPop; ++i) {
     this->popDecision();
   }
@@ -369,7 +390,7 @@ bool Solver::simplify()
     });
   }), mClauses.end());
 
-  // Remove all literals from clauses that are false
+  // Remove all false literals from clauses
   for (Clause& clause : mClauses) {
     clause.remove([this](Literal lit) {
       Tribool assignedValue = mVariableState[lit.index()];

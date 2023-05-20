@@ -146,26 +146,48 @@ public:
 
   std::vector<bool> model() const;
 
+  void dumpStats(std::ostream& os) const;
+
+  // Solver implementation
+  //==---------------------------------------------------------------------==//
+private:
+  /// Simplify the clause database, propagating unit clauses and removing propagated values.
+  /// \return False if the simplified clause database contains an empty clause, otherwise true.
+  [[nodiscard]] bool simplify();
+
+  void preprocess();
+
+  void resetWatches();
+
+  // Assignments and decisions
+  //==---------------------------------------------------------------------==//
+
   void assignUnitClause(Literal literal, int clauseIndex);
 
   void assignVariable(Literal literal);
 
   void undoAssignment(size_t variableIndex);
 
-  bool propagate();
-
-  /// Simplify the clause database, propagating unit clauses and removing propagated values.
-  /// \return False if the simplified clause database contains an empty clause, otherwise true.
-  [[nodiscard]] bool simplify();
-
-  [[nodiscard]] bool reduceDatabase();
-
   void pushDecision(Literal literal);
 
   void popDecision();
 
-  /// Pop the decision level which assigned `varIdx` and all decisions following it.
-  void popDecisionUntil(int varIdx);
+  /// Pop decisions until `level`.
+  void popDecisionUntil(int level);
+
+  bool isValidChoice(int index, bool value)
+  {
+    return std::ranges::none_of(mTrail, [&](Literal lit) {
+      return lit.index() == index && lit.value() != value;
+    });
+  }
+
+  // Unit propagation
+  //==---------------------------------------------------------------------==//
+
+  bool propagate();
+
+  ClauseStatus checkClause(const Clause& clause);
 
   Literal unassignedLiteral(const Clause& clause)
   {
@@ -180,22 +202,16 @@ public:
     return Literal{0};
   }
 
-  void dumpStats(std::ostream& os) const;
+  // Clause learning
+  //==---------------------------------------------------------------------==//
 
-private:
-  bool isValidChoice(int index, bool value)
-  {
-    return std::ranges::none_of(mTrail, [&](Literal lit) {
-      return lit.index() == index && lit.value() != value;
-    });
-  }
+  void analyzeConflict(int conflictClauseIndex);
 
-  void preprocess();
-  void resetWatches();
+  [[nodiscard]] std::vector<Literal> lastUniqueImplicationPointCut(int conflictClauseIndex);
 
-  ClauseStatus checkClause(const Clause& clause);
+  /// Calculates the predcessors of \p lit in the implication graph.
+  [[nodiscard]] std::vector<Literal> implyingPredecessors(Literal lit);
 
-  void analyzeConflict(size_t trailIndex);
 
   // Some helper methods
   //==----------------------------------------------------------------------==//
@@ -240,7 +256,7 @@ private:
 
   // List of assignments in chronological order.
   std::vector<Literal> mTrail;
-  std::vector<size_t> mTrailIndices;
+  std::vector<int> mTrailIndices;
 
   Statistics mStats;
 };
