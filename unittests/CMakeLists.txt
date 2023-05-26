@@ -1,7 +1,5 @@
 enable_testing()
 
-include(FetchContent)
-
 # Load GoogleTest
 FetchContent_Declare(
   gtest

@@ -37,10 +37,11 @@ std::ostream& ivasat::operator<<(std::ostream& os, Status status)
 
 void Solver::dumpStats(std::ostream& os) const
 {
-  os << "Total checked states: " << mStats.checkedStates << "\n";
-  os << "Total checked full combinations: " << mStats.checkedFullCombinations << "\n";
+  os << "Decisions: " << mStats.decisions << "\n";
+  os << "Conflicts: " << mStats.conflicts << "\n";
   os << "Learned clauses: " << mStats.learnedClauses << "\n";
   os << "Propagations: " << mStats.propagations << "\n";
+  os << "Clauses eliminated by simplification: " << mStats.clausesEliminatedBySimplification << "\n";
 }
 
 void Solver::dumpImplicationGraph(int conflictClauseIndex)

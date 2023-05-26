@@ -131,13 +131,17 @@ class Solver
 
   struct Statistics
   {
-    unsigned checkedStates = 0;
+    unsigned decisions = 0;
     unsigned checkedFullCombinations = 0;
     unsigned propagations = 0;
     unsigned learnedClauses = 0;
+    unsigned clausesEliminatedBySimplification = 0;
+    unsigned conflicts = 0;
   };
 
   static constexpr int UnknownIndex = -1;
+
+  static constexpr double DefaultActivityDecay = 0.9;
 
 public:
   explicit Solver(const Instance& instance);
@@ -245,6 +249,7 @@ private:
   // Internal solver state
   std::vector<Tribool> mVariableState;
   std::vector<Literal> mDecisions;
+  std::vector<double> mActivity;
 
   // For each assigned variable index, the index of the variable and clause that implied its value.
   // The value for decided and unassigned variables is going to be -1.
