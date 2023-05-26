@@ -88,13 +88,13 @@ Status Solver::check()
   }
 
   // Start search
-  Literal nextDecision(pickDecisionVariable(1), true);
+  Literal nextDecision(pickDecisionVariable(), true);
 
   while (true) {
     // Check if the current state is okay
     this->pushDecision(nextDecision);
 
-    mStats.checkedStates++;
+    mStats.decisions++;
     if (numAssigned() == mVariableState.size() - 1) {
       mStats.checkedFullCombinations++;
     }
@@ -106,7 +106,7 @@ Status Solver::check()
         return Status::Sat;
       }
 
-      int decisionVariable = pickDecisionVariable(nextDecision.index());
+      int decisionVariable = pickDecisionVariable();
       nextDecision = {decisionVariable, true};
     } else {
       // We learned a new clause, check the backtracking level
@@ -125,7 +125,7 @@ Status Solver::check()
       }
 
       if (backtrackLevel != -1) {
-        this->popDecisionUntil(backtrackLevel + 1);
+        this->popDecisionUntil(backtrackLevel);
       }
       bool hasNextState = false;
       for (auto it = mDecisions.rbegin(); it != mDecisions.rend(); ++it) {
@@ -141,12 +141,10 @@ Status Solver::check()
             return Status::Sat;
           }
 
-          int newDecisionVariable = pickDecisionVariable(decidedVariable);
-          if (newDecisionVariable != decidedVariable) {
-            nextDecision = {newDecisionVariable, true};
-            hasNextState = true;
-            break;
-          }
+          int newDecisionVariable = pickDecisionVariable();
+          nextDecision = {newDecisionVariable, true};
+          hasNextState = true;
+          break;
         }
 
         bool possibleValue = previousVariableState != Tribool::True;
@@ -182,6 +180,7 @@ bool Solver::propagate()
       const auto& clause = mClauses[i];
       auto clauseStatus = checkClause(clause);
       if (clauseStatus == ClauseStatus::Conflicting) {
+        mStats.conflicts++;
         this->analyzeConflict(i);
         return false;
       }
@@ -225,6 +224,15 @@ void Solver::analyzeConflict(int conflictClauseIndex)
       mWatches[lit.index()].push_back(static_cast<int>(mClauses.size() - 1));
     }
     mWatches[0].push_back(static_cast<int>(mClauses.size() - 1));
+
+    for (Literal lit : mClauses[conflictClauseIndex]) {
+      mActivity[lit.index()] += 1;
+    }
+
+    // Decay all activities
+    for (int i = 1; i < mActivity.size(); ++i) {
+      mActivity[i] *= DefaultActivityDecay;
+    }
   }
 }
 
@@ -310,6 +318,7 @@ void Solver::assignVariable(Literal literal)
 Solver::Solver(const Instance& instance)
   : mWatches(instance.numVariables() + 1, std::vector<int>{}),
     mVariableState(instance.numVariables() + 1, Tribool::Unknown),
+    mActivity(instance.numVariables() + 1, 1.0),
     mImplications(instance.numVariables() + 1, UnknownIndex),
     mAssignedAtLevel(instance.numVariables() + 1, UnknownIndex)
 {
@@ -344,7 +353,7 @@ void Solver::popDecisionUntil(int level)
   assert(level <= decisionLevel() && "Cannot pop a decision which did not take place");
 
   size_t decisionsToPop = decisionLevel() - level;
-  for (unsigned i = 0; i <= decisionsToPop; ++i) {
+  for (unsigned i = 0; i < decisionsToPop; ++i) {
     this->popDecision();
   }
 }
@@ -421,16 +430,23 @@ void Solver::resetWatches()
   }
 }
 
-int Solver::pickDecisionVariable(int start) const
+int Solver::pickDecisionVariable() const
 {
-  for (int i = start; i < mVariableState.size(); ++i) {
-    if (mVariableState[i] == Tribool::Unknown) {
-      return i;
+  double maxActivity = -1.0;
+  int maxActivityIndex = UnknownIndex;
+  for (int i = 1; i < mVariableState.size(); ++i) {
+    if (mVariableState[i] != Tribool::Unknown) {
+      continue;
+    }
+
+    if (mActivity[i] > maxActivity) {
+      maxActivity = mActivity[i];
+      maxActivityIndex = i;
     }
   }
 
-  assert(false && "There must be an unassigned index in a valid solver state!");
-  return UnknownIndex;
+  assert(maxActivityIndex != -1 && "There must be an unassigned index in a valid solver state!");
+  return maxActivityIndex;
 }
 
 std::vector<bool> Instance::model() const

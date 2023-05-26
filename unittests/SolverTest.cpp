@@ -283,6 +283,26 @@ TEST(SolverTest, wrong_unsat_4)
   EXPECT_TRUE(assertSat(inst, Status::Sat));
 }
 
+
+TEST(SolverTest, wrong_unsat_5)
+{
+  std::stringstream ss(R"(
+p cnf 9 9
+2 3 6 0
+-3 5 6 0
+-3 -5 6 0
+-6 9 0
+-6 -9 0
+-2 4 0
+-4 -7 0
+7 8 0
+-1 -8 0
+)");
+  auto inst = parseDimacs(ss);
+
+  EXPECT_TRUE(assertSat(*inst, Status::Sat));
+}
+
 TEST(SolverTest, simplify_top_level_with_learned_clause)
 {
   std::stringstream ss(R"(
