@@ -1,5 +1,7 @@
 #include "Solver.h"
 
+#include <boost/dynamic_bitset.hpp>
+
 #include <set>
 #include <algorithm>
 #include <iostream>
@@ -388,29 +390,63 @@ bool Solver::simplify()
 {
   assert(mDecisions.empty() && "Simplification should only be called on the top level!");
 
-  if (!this->propagate()) {
-    return false;
-  }
-
-  // Delete all clauses which are true
-  mClauses.erase(std::remove_if(mClauses.begin(), mClauses.end(), [this](const Clause& clause) {
-    return std::ranges::any_of(clause, [this](Literal lit) {
-      return mVariableState[lit.index()] == liftBool(lit.value());
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    
+    if (!this->propagate()) {
+      return false;
+    }
+  
+    // Find pure literals
+    boost::dynamic_bitset<> positive{mVariableState.size()};
+    boost::dynamic_bitset<> negative{mVariableState.size()};
+    for (const Clause& clause : mClauses) {
+      for (Literal lit : clause) {
+        if (lit.isNegated()) {
+          negative[lit.index()] = true;
+        } else {
+          positive[lit.index()] = true;
+        }
+      }
+    }
+  
+    for (int i = 1; i < mVariableState.size(); ++i) {
+      bool isPure = positive[i] ^ negative[i];
+      if (isPure && mVariableState[i] == Tribool::Unknown) {
+        if (positive[i]) {
+          this->assignVariable(Literal{i, true});
+        } else if (negative[i]) {
+          this->assignVariable(Literal{i, false});
+        }
+      }
+    }
+  
+    // Delete all clauses which are true
+    auto first = std::remove_if(mClauses.begin(), mClauses.end(), [this](const Clause& clause) {
+      return std::ranges::any_of(clause, [this](Literal lit) {
+        return mVariableState[lit.index()] == liftBool(lit.value());
+      });
     });
-  }), mClauses.end());
-
-  // Remove all false literals from clauses
-  for (Clause& clause : mClauses) {
-    clause.remove([this](Literal lit) {
-      Tribool assignedValue = mVariableState[lit.index()];
-      return assignedValue != Tribool::Unknown && liftBool(lit.value()) != assignedValue;
-    });
+    long numEliminated = std::distance(first, mClauses.end());
+    mStats.clausesEliminatedBySimplification += numEliminated;
+    mClauses.erase(first, mClauses.end());
+    changed |= numEliminated != 0;
+  
+    // Remove all false literals from clauses
+    for (Clause& clause : mClauses) {
+      long numRemoved = clause.remove([this](Literal lit) {
+        Tribool assignedValue = mVariableState[lit.index()];
+        return assignedValue != Tribool::Unknown && liftBool(lit.value()) != assignedValue;
+      });
+      changed |= numRemoved != 0;
+    }
+  
+    assert(std::ranges::none_of(mClauses, [](Clause& c) { return c.size() == 0; })
+      && "There should be no empty clauses left after simplification!");
+  
+    this->resetWatches();
   }
-
-  assert(std::ranges::none_of(mClauses, [](Clause& c) { return c.size() == 0; })
-    && "There should be no empty clauses left after simplification!");
-
-  this->resetWatches();
 
   return true;
 }

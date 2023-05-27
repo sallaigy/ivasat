@@ -96,9 +96,13 @@ public:
   }
 
   template<class Predicate>
-  void remove(Predicate&& pred)
+  long remove(Predicate&& pred)
   {
-    mLiterals.erase(std::remove_if(mLiterals.begin(), mLiterals.end(), pred), mLiterals.end());
+    auto pos = std::remove_if(mLiterals.begin(), mLiterals.end(), pred);
+    long numRemoved = std::distance(pos, mLiterals.end());
+    mLiterals.erase(pos, mLiterals.end());
+
+    return numRemoved;
   }
 
 private:
@@ -230,7 +234,7 @@ private:
     return mTrail.size();
   }
 
-  int pickDecisionVariable(int start) const;
+  int pickDecisionVariable() const;
 
   // Debug methods
   //==----------------------------------------------------------------------==//
