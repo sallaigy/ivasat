@@ -227,7 +227,7 @@ void Solver::analyzeConflict(int conflictClauseIndex)
     }
     mWatches[0].push_back(static_cast<int>(mClauses.size() - 1));
 
-    for (Literal lit : mClauses[conflictClauseIndex]) {
+    for (Literal lit : newClause) {
       mActivity[lit.index()] += 1;
     }
 
