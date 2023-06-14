@@ -1,7 +1,17 @@
 #include "ivasat/ivasat.h"
+#include "Solver.h"
 
 #include <iostream>
 #include <fstream>
+#include <csignal>
+
+static std::unique_ptr<ivasat::Solver> solver;
+
+static void interrupt_solver([[maybe_unused]] int num)
+{
+  solver->dumpStats(std::cout);
+  exit(1);
+}
 
 int main(int argc, char* argv[])
 {
@@ -14,8 +24,12 @@ int main(int argc, char* argv[])
   std::ifstream input(file);
 
   auto instance = ivasat::parseDimacs(input);
+  solver = std::make_unique<ivasat::Solver>(*instance);
 
-  auto status = instance->check();
+  signal(SIGINT, interrupt_solver);
+
+  auto status = solver->check();
+  solver->dumpStats(std::cout);
 
   std::cout << status << "\n";
 }

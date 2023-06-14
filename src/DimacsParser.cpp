@@ -34,8 +34,8 @@ std::unique_ptr<Instance> ivasat::parseDimacs(std::istream& input)
 std::unique_ptr<Instance> DimacsStream::parse()
 {
   // Parse file header
-  size_t numVars;
-  size_t numClauses;
+  size_t numVars = 0;
+  size_t numClauses = 0;
 
   while (mStream) {
     int curr = mStream.get();
