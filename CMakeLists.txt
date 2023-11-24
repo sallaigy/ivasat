@@ -19,4 +19,6 @@ include_directories(${boost_dynamic_bitset_SOURCE_DIR}/include)
 include_directories(include)
 
 add_subdirectory(src)
+
+enable_testing()
 add_subdirectory(unittests)

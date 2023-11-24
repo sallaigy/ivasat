@@ -111,24 +111,9 @@ Status Solver::check()
       int decisionVariable = pickDecisionVariable();
       nextDecision = {decisionVariable, true};
     } else {
-      // We learned a new clause, check the backtracking level
-      Clause& learnedClause = mClauses.back();
-      int backtrackLevel = -1;
-      if (learnedClause.size() == 1) {
-        // If a unit clause is learned, we want to jump back to the top level and propagate it.
-        backtrackLevel = 1;
-      } else {
-        for (Literal lit: learnedClause) {
-          if (lit.index() != mDecisions.back().index()) {
-            backtrackLevel =
-            backtrackLevel >= mAssignedAtLevel[lit.index()] ? backtrackLevel : mAssignedAtLevel[lit.index()];
-          }
-        }
-      }
+      // We reached a conflict, perform backtracking
+      this->backtrack();
 
-      if (backtrackLevel != -1) {
-        this->popDecisionUntil(backtrackLevel);
-      }
       bool hasNextState = false;
       for (auto it = mDecisions.rbegin(); it != mDecisions.rend(); ++it) {
         int decidedVariable = it->index();
@@ -136,6 +121,7 @@ Status Solver::check()
         this->popDecision();
 
         if (decisionLevel() == 0) {
+          mStats.restarts += 1;
           // If we backtracked back to the top level, try to simplify the clause database.
           if (bool simplifyResult = this->simplify(); !simplifyResult) {
             return Status::Unsat;
@@ -215,25 +201,26 @@ void Solver::analyzeConflict(int conflictClauseIndex)
     return;
   }
 
-  std::vector<Literal> newClause = this->lastUniqueImplicationPointCut(conflictClauseIndex);
+  std::vector<Literal> newClause = this->firstUniqueImplicationPointCut(conflictClauseIndex);
   if (!newClause.empty()) {
     mStats.learnedClauses++;
     std::ranges::sort(newClause);
     newClause.erase(std::unique(newClause.begin(), newClause.end()), newClause.end());
 
-    mClauses.emplace_back(newClause);
+    mClauses.emplace_back(newClause, true);
     for (Literal lit : newClause) {
       mWatches[lit.index()].push_back(static_cast<int>(mClauses.size() - 1));
     }
     mWatches[0].push_back(static_cast<int>(mClauses.size() - 1));
 
-    for (Literal lit : newClause) {
-      mActivity[lit.index()] += 1;
-    }
-
     // Decay all activities
     for (int i = 1; i < mActivity.size(); ++i) {
       mActivity[i] *= DefaultActivityDecay;
+    }
+
+    // Bump activity of related variables
+    for (Literal lit : newClause) {
+      mActivity[lit.index()] += 1;
     }
   }
 }
@@ -255,7 +242,8 @@ std::vector<Literal> Solver::lastUniqueImplicationPointCut(int conflictClauseInd
   std::vector<Literal> newClause;
 
   for (Literal lit : conflict) {
-    std::vector<Literal> preds = implyingPredecessors(lit);
+    std::vector<Literal> preds;
+    fillImplyingPredecessors(lit, preds);
     for (Literal predecessor : preds) {
       if (auto it = std::ranges::find(reason, predecessor); it != reason.end()) {
         newClause.push_back(it->negate());
@@ -273,23 +261,113 @@ std::vector<Literal> Solver::lastUniqueImplicationPointCut(int conflictClauseInd
   return newClause;
 }
 
-std::vector<Literal> Solver::implyingPredecessors(Literal lit)
+std::vector<Literal> Solver::firstUniqueImplicationPointCut(int conflictClauseIndex)
 {
-  std::vector<Literal> result;
+  // Linear time algorithm to find a 1-UIP cut, adapted from the algorithm described in the Minisat paper.
+  //
+  // Given an implication graph, a unique implication point is a node at decision level `d` such that every path from the decision variable
+  // at level `d` to the conflict node must go through it. In other words, the UIP is a dominator in the implication graph. The first unique
+  // implication point (1-UIP) is the dominator closest to the conflict.
+  //
+  // A cut for a UIP `l` is a pair (R,C) where
+  //  - C contains all successors of `l` where there is a path to the conflict node, and
+  //  - R contains all the rest of the nodes.
+  // The new clause contains the negation of literals that have edges from the predecessors side (R) to the conflict side (C).
+  //
+  // The basic idea of the algorithm is to perform a backwards breadth-first traversal on the implication graph, until we find the first UIP.
+  std::vector<bool> seen(mVariableState.size(), false);
 
+  int counter = 0;
+  size_t trailIdx = mTrail.size() - 1;
+
+  std::vector<Literal> newClause;
+
+  // Track the predecessors of the currently processed literal. In the first step, we start from the conflict node,
+  // so we start with its predecessor set, i.e. the literals of the conflict clause.
+  const Clause& conflictClause = mClauses[conflictClauseIndex];
+  std::vector<Literal> predecessors(conflictClause.begin(), conflictClause.end());
+
+  while (true) {
+    for (Literal lit : predecessors) {
+      if (seen[lit.index()]) {
+        continue;
+      }
+
+      seen[lit.index()] = true;
+      if (mAssignedAtLevel[lit.index()] == decisionLevel()) {
+        counter++;
+      } else if (mAssignedAtLevel[lit.index()] > 0) {
+        // If the literal is from another decision level, it is not a successor of the 1-UIP, so it belongs to the "reason" side in the cut.
+        // As the current literal belongs to the conflict side, it means that this literal has an edge from the predecessors side to the conflict side,
+        // meaning that it has to be included in the learned clause.
+        //
+        // We exclude literals from the top level as they were assigned as part of pre-processing and simplification.
+        newClause.push_back(lit);
+      }
+    }
+
+    // Select the next literal to inspect.
+    Literal nextLit = mTrail[trailIdx];
+    trailIdx--;
+    while (!seen[nextLit.index()]) {
+      nextLit = mTrail[trailIdx];
+      trailIdx--;
+    }
+
+    // Update the predecessor set with the literals that led to the unit propagation of the current literal, i.e. the predecessors of the literal in the implication graph.
+    predecessors.clear();
+    this->fillImplyingPredecessors(nextLit, predecessors);
+    assert((counter == 1 || !predecessors.empty()) && "There must be at least one implying predecessor of an implied literal!");
+
+    counter--;
+    if (counter == 0) {
+      newClause.push_back(nextLit.negate());
+      return newClause;
+    }
+  }
+}
+
+void Solver::fillImplyingPredecessors(Literal lit, std::vector<Literal>& result)
+{
   int literalIndex = lit.index();
   int impliedByClause = mImplications[literalIndex];
   if (impliedByClause == UnknownIndex) {
-    return result;
+    return;
   }
 
-  for (Literal clauseLit : mClauses[impliedByClause]) {
+  Clause& implyingClause = mClauses[impliedByClause];
+  implyingClause.bumpActivity();
+
+  for (Literal clauseLit : implyingClause) {
     if (clauseLit.index() != literalIndex) {
       result.emplace_back(clauseLit.index(), mVariableState[clauseLit.index()] == Tribool::True);
     }
   }
+}
 
-  return result;
+void Solver::backtrack()
+{
+  // We learned a new clause, check the backtracking level
+  const Clause& learnedClause = mClauses.back();
+  if (learnedClause.size() == 1) {
+    // If a unit clause is learned, we want to jump back to the top level and propagate it.
+    this->popDecisionUntil(1);
+  }
+
+  // Determine the backtrack level: this should be the second-largest decision level of the literals in the learned clause.
+  int backtrackLevel = -1;
+  for (Literal lit: learnedClause) {
+    if (lit.index() != mDecisions.back().index()) {
+      int assignmentLevel = mAssignedAtLevel[lit.index()];
+      if (backtrackLevel < assignmentLevel) {
+        backtrackLevel = assignmentLevel;
+      }
+    }
+  }
+
+  if (backtrackLevel != -1) {
+    this->popDecisionUntil(backtrackLevel);
+  }
 }
 
 std::vector<bool> Solver::model() const
@@ -410,7 +488,7 @@ bool Solver::simplify()
         }
       }
     }
-  
+
     for (int i = 1; i < mVariableState.size(); ++i) {
       bool isPure = positive[i] ^ negative[i];
       if (isPure && mVariableState[i] == Tribool::Unknown) {
@@ -419,11 +497,12 @@ bool Solver::simplify()
         } else if (negative[i]) {
           this->assignVariable(Literal{i, false});
         }
+        mStats.pureLiterals++;
       }
     }
-  
-    // Delete all clauses which are true
+
     auto first = std::remove_if(mClauses.begin(), mClauses.end(), [this](const Clause& clause) {
+      // Delete all clauses which are true
       return std::ranges::any_of(clause, [this](Literal lit) {
         return mVariableState[lit.index()] == liftBool(lit.value());
       });
@@ -432,7 +511,7 @@ bool Solver::simplify()
     mStats.clausesEliminatedBySimplification += numEliminated;
     mClauses.erase(first, mClauses.end());
     changed |= numEliminated != 0;
-  
+
     // Remove all false literals from clauses
     for (Clause& clause : mClauses) {
       long numRemoved = clause.remove([this](Literal lit) {
@@ -441,11 +520,13 @@ bool Solver::simplify()
       });
       changed |= numRemoved != 0;
     }
-  
+
     assert(std::ranges::none_of(mClauses, [](Clause& c) { return c.size() == 0; })
       && "There should be no empty clauses left after simplification!");
-  
+
+    // Deleting clauses changed clause indices: re-initialize watches and reset the implications graph.
     this->resetWatches();
+    std::ranges::fill(mImplications, UnknownIndex);
   }
 
   return true;

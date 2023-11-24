@@ -79,14 +79,20 @@ if __name__ == "__main__":
     tool = args.tool_path
     timeout_value = int(args.timeout)
 
-    tests = discover_tests(tests_dir)
+    tests = sorted(discover_tests(tests_dir))
     max_len = len(max(map(str, tests), key=len))
+    num_timeouts = 0
+    num_errors = 0
 
     total_solver_time = 0
     for test in tests:
         test_name = str(test)
         print(f'{test_name:{max_len + 4}}', end='', flush=True)
         status = run_ivasat(tool, test, timeout_value)
+
+        num_timeouts += 1 if status[0] == Result.TIMEOUT else 0
+        num_errors += 1 if status[0] == Result.ERROR else 0
+
         total_solver_time += status[1]
         if args.minisat:
             minisat_status = run_minisat('minisat', test, timeout_value)
@@ -96,4 +102,6 @@ if __name__ == "__main__":
 
     print('================================')
     print(f'Total tests: {len(tests)}')
+    print(f'Timeouts: {num_timeouts}')
+    print(f'Errors: {num_errors}')
     print(f'Total time: {total_solver_time}')

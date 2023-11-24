@@ -60,8 +60,8 @@ private:
 class Clause
 {
 public:
-  explicit Clause(std::vector<Literal> literals)
-    : mLiterals(std::move(literals))
+  explicit Clause(std::vector<Literal> literals, bool isLearned = false)
+    : mLiterals(std::move(literals)), mIsLearned(isLearned)
   {
     std::ranges::sort(mLiterals);
   }
@@ -72,6 +72,11 @@ public:
   const Literal& operator[](int index) const
   {
     return mLiterals[index];
+  }
+
+  bool isLearned() const
+  {
+    return mIsLearned;
   }
 
   // Iterator support
@@ -107,6 +112,7 @@ public:
 
 private:
   std::vector<Literal> mLiterals;
+  bool mIsLearned;
 };
 
 enum class Tribool
@@ -216,13 +222,14 @@ private:
   void analyzeConflict(int conflictClauseIndex);
 
   [[nodiscard]] std::vector<Literal> lastUniqueImplicationPointCut(int conflictClauseIndex);
+  [[nodiscard]] std::vector<Literal> firstUniqueImplicationPointCut(int conflictClauseIndex);
 
-  /// Calculates the predcessors of \p lit in the implication graph.
-  [[nodiscard]] std::vector<Literal> implyingPredecessors(Literal lit);
-
+  /// Calculates the predecessors of \p lit in the implication graph.
+  void fillImplyingPredecessors(Literal lit, std::vector<Literal>& result);
 
   // Some helper methods
   //==----------------------------------------------------------------------==//
+
   int decisionLevel() const
   {
     return static_cast<int>(mDecisions.size());
@@ -235,6 +242,8 @@ private:
   }
 
   int pickDecisionVariable() const;
+
+  void backtrack();
 
   // Debug methods
   //==----------------------------------------------------------------------==//
@@ -255,7 +264,7 @@ private:
   std::vector<Literal> mDecisions;
   std::vector<double> mActivity;
 
-  // For each assigned variable index, the index of the variable and clause that implied its value.
+  // For each assigned variable index, the index of the clause that implied its value.
   // The value for decided and unassigned variables is going to be -1.
   std::vector<int> mImplications;
 
