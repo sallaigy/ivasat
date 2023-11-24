@@ -1,4 +1,3 @@
-enable_testing()
 
 # Load GoogleTest
 FetchContent_Declare(

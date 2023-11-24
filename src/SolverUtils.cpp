@@ -55,7 +55,13 @@ void Solver::dumpImplicationGraph(int conflictClauseIndex)
     int varIdx = lit.index();
 
     int assignedAt = mAssignedAtLevel[varIdx];
-    ss << "node_" << varIdx << " [label=\"" << varIdx << ":" << std::boolalpha << lit.value() << "@" << assignedAt << "\"];\n";
+
+    std::string colorLabel;
+    if (std::ranges::find(mDecisions, lit) != mDecisions.end()) {
+      colorLabel = ", style=filled, fillcolor=\"green\"";
+    }
+
+    ss << "node_" << varIdx << " [label=\"" << varIdx << ":" << std::boolalpha << lit.value() << "@" << assignedAt << "\"" << colorLabel << "];\n";
   }
 
   for (int i = 0; i < mImplications.size(); ++i) {
