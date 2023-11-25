@@ -41,7 +41,9 @@ void Solver::dumpStats(std::ostream& os) const
   os << "Conflicts: " << mStats.conflicts << "\n";
   os << "Learned clauses: " << mStats.learnedClauses << "\n";
   os << "Propagations: " << mStats.propagations << "\n";
+  os << "Restarts: " << mStats.restarts << "\n";
   os << "Clauses eliminated by simplification: " << mStats.clausesEliminatedBySimplification << "\n";
+  os << "Pure literals found: " << mStats.pureLiterals << "\n";
 }
 
 void Solver::dumpImplicationGraph(int conflictClauseIndex)

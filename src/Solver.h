@@ -146,7 +146,9 @@ class Solver
     unsigned propagations = 0;
     unsigned learnedClauses = 0;
     unsigned clausesEliminatedBySimplification = 0;
+    unsigned restarts = 0;
     unsigned conflicts = 0;
+    unsigned pureLiterals = 0;
   };
 
   static constexpr int UnknownIndex = -1;
