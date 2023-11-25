@@ -336,7 +336,6 @@ void Solver::fillImplyingPredecessors(Literal lit, std::vector<Literal>& result)
   }
 
   Clause& implyingClause = mClauses[impliedByClause];
-  implyingClause.bumpActivity();
 
   for (Literal clauseLit : implyingClause) {
     if (clauseLit.index() != literalIndex) {
