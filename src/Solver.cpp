@@ -261,20 +261,21 @@ std::vector<Literal> Solver::lastUniqueImplicationPointCut(int conflictClauseInd
   return newClause;
 }
 
+// Linear time algorithm to find a 1-UIP cut, adapted from the algorithm described in the Minisat paper.
+//
+// Given an implication graph, a unique implication point is a node at decision level `d` such that every path from the decision variable
+// at level `d` to the conflict node must go through it. In other words, the UIP is a dominator in the implication graph. The first unique
+// implication point (1-UIP) is the dominator closest to the conflict.
+//
+// A cut for a UIP `l` is a pair (R,C) where
+//  - C contains all successors of `l` where there is a path to the conflict node, and
+//  - R contains all the rest of the nodes.
+// The new clause contains the negation of literals that have edges from the predecessors side (R) to the conflict side (C).
+//
+// The basic idea of the algorithm is to perform a backwards breadth-first traversal on the implication graph, until we find the first UIP.
 std::vector<Literal> Solver::firstUniqueImplicationPointCut(int conflictClauseIndex)
 {
-  // Linear time algorithm to find a 1-UIP cut, adapted from the algorithm described in the Minisat paper.
-  //
-  // Given an implication graph, a unique implication point is a node at decision level `d` such that every path from the decision variable
-  // at level `d` to the conflict node must go through it. In other words, the UIP is a dominator in the implication graph. The first unique
-  // implication point (1-UIP) is the dominator closest to the conflict.
-  //
-  // A cut for a UIP `l` is a pair (R,C) where
-  //  - C contains all successors of `l` where there is a path to the conflict node, and
-  //  - R contains all the rest of the nodes.
-  // The new clause contains the negation of literals that have edges from the predecessors side (R) to the conflict side (C).
-  //
-  // The basic idea of the algorithm is to perform a backwards breadth-first traversal on the implication graph, until we find the first UIP.
+  // Track the variables
   std::vector<bool> seen(mVariableState.size(), false);
 
   int counter = 0;
@@ -285,7 +286,12 @@ std::vector<Literal> Solver::firstUniqueImplicationPointCut(int conflictClauseIn
   // Track the predecessors of the currently processed literal. In the first step, we start from the conflict node,
   // so we start with its predecessor set, i.e. the literals of the conflict clause.
   const Clause& conflictClause = mClauses[conflictClauseIndex];
-  std::vector<Literal> predecessors(conflictClause.begin(), conflictClause.end());
+  std::vector<Literal> predecessors;
+  predecessors.reserve(conflictClause.size());
+
+  for (Literal lit : conflictClause) {
+    predecessors.emplace_back(lit.index(), mVariableState[lit.index()] == Tribool::True);
+  }
 
   while (true) {
     for (Literal lit : predecessors) {
@@ -297,12 +303,12 @@ std::vector<Literal> Solver::firstUniqueImplicationPointCut(int conflictClauseIn
       if (mAssignedAtLevel[lit.index()] == decisionLevel()) {
         counter++;
       } else if (mAssignedAtLevel[lit.index()] > 0) {
-        // If the literal is from another decision level, it is not a successor of the 1-UIP, so it belongs to the "reason" side in the cut.
+        // If a predecessor literal is from another decision level, it is not a successor of the 1-UIP, so it belongs to the "reason" side in the cut.
         // As the current literal belongs to the conflict side, it means that this literal has an edge from the predecessors side to the conflict side,
         // meaning that it has to be included in the learned clause.
         //
         // We exclude literals from the top level as they were assigned as part of pre-processing and simplification.
-        newClause.push_back(lit);
+        newClause.push_back(lit.negate());
       }
     }
 
