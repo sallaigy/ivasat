@@ -2,6 +2,7 @@
 #define IVA_SAT_SOLVER_H
 
 #include "ivasat/ivasat.h"
+#include "Clause.h"
 
 #include <vector>
 #include <algorithm>
@@ -11,109 +12,6 @@
 
 namespace ivasat
 {
-
-/// Represents a literal inside of a SAT problem, that is a pair of (variable, value).
-class Literal
-{
-public:
-  explicit Literal(int data)
-    : mData(data)
-  {
-    assert(data != 0 && "Literal data must be strictly positive or negative!");
-  }
-
-  Literal(int index, bool value)
-    : mData(value ? index : -index)
-  {
-    assert(index > 0 && "A literal cannot have a zero or negative index!");
-  }
-
-  Literal(const Literal&) = default;
-  Literal& operator=(const Literal&) = default;
-
-  auto operator<=>(const Literal& other) const = default;
-
-  [[nodiscard]] int index() const
-  {
-    return isNegated() ? -mData : mData;
-  }
-
-  [[nodiscard]] bool value() const
-  {
-    return !isNegated();
-  }
-
-  [[nodiscard]] bool isNegated() const
-  {
-    return mData < 0;
-  }
-
-  [[nodiscard]] Literal negate() const
-  {
-    return Literal(-mData);
-  }
-
-private:
-  int mData;
-};
-
-class Clause
-{
-public:
-  explicit Clause(std::vector<Literal> literals, bool isLearned = false)
-    : mLiterals(std::move(literals)), mIsLearned(isLearned)
-  {
-    std::ranges::sort(mLiterals);
-  }
-
-  Clause(const Clause&) = default;
-  Clause& operator=(const Clause&) = default;
-
-  const Literal& operator[](int index) const
-  {
-    return mLiterals[index];
-  }
-
-  bool isLearned() const
-  {
-    return mIsLearned;
-  }
-
-  // Iterator support
-  using const_iterator = std::vector<Literal>::const_iterator;
-  const_iterator begin() const
-  {
-    return mLiterals.begin();
-  }
-  const_iterator end() const
-  {
-    return mLiterals.end();
-  }
-  size_t size() const
-  {
-    return mLiterals.size();
-  }
-
-  // Manipulation
-  void remove(Literal lit)
-  {
-    mLiterals.erase(std::remove(mLiterals.begin(), mLiterals.end(), lit), mLiterals.end());
-  }
-
-  template<class Predicate>
-  long remove(Predicate&& pred)
-  {
-    auto pos = std::remove_if(mLiterals.begin(), mLiterals.end(), pred);
-    long numRemoved = std::distance(pos, mLiterals.end());
-    mLiterals.erase(pos, mLiterals.end());
-
-    return numRemoved;
-  }
-
-private:
-  std::vector<Literal> mLiterals;
-  bool mIsLearned;
-};
 
 enum class Tribool
 {
@@ -146,6 +44,7 @@ class Solver
     unsigned propagations = 0;
     unsigned learnedClauses = 0;
     unsigned clausesEliminatedBySimplification = 0;
+    unsigned clausesEliminatedByActivity = 0;
     unsigned restarts = 0;
     unsigned conflicts = 0;
     unsigned pureLiterals = 0;
@@ -153,7 +52,9 @@ class Solver
 
   static constexpr int UnknownIndex = -1;
 
-  static constexpr double DefaultActivityDecay = 0.9;
+  static constexpr double DefaultActivityDecay = 0.95;
+  static constexpr double DefaultClauseDecay = 0.999;
+  static constexpr double DefaultMaxLearnedFactor = (double) 1 / 3;
 
 public:
   explicit Solver(const Instance& instance);
@@ -178,7 +79,7 @@ private:
   // Assignments and decisions
   //==---------------------------------------------------------------------==//
 
-  void assignUnitClause(Literal literal, int clauseIndex);
+  void assignUnitClause(Literal literal, Clause& clause);
 
   void assignVariable(Literal literal);
 
@@ -221,10 +122,10 @@ private:
   // Clause learning
   //==---------------------------------------------------------------------==//
 
-  void analyzeConflict(int conflictClauseIndex);
+  void analyzeConflict(Clause& conflictClause);
 
   [[nodiscard]] std::vector<Literal> lastUniqueImplicationPointCut(int conflictClauseIndex);
-  [[nodiscard]] std::vector<Literal> firstUniqueImplicationPointCut(int conflictClauseIndex);
+  [[nodiscard]] std::vector<Literal> firstUniqueImplicationPointCut(const Clause& conflictClause);
 
   /// Calculates the predecessors of \p lit in the implication graph.
   void fillImplyingPredecessors(Literal lit, std::vector<Literal>& result);
@@ -259,16 +160,16 @@ private:
 
   // Clause database
   std::vector<Clause> mClauses;
-  std::vector<std::vector<int>> mWatches;
+  std::vector<std::vector<Clause*>> mWatches;
 
   // Internal solver state
   std::vector<Tribool> mVariableState;
   std::vector<Literal> mDecisions;
   std::vector<double> mActivity;
 
-  // For each assigned variable index, the index of the clause that implied its value.
-  // The value for decided and unassigned variables is going to be -1.
-  std::vector<int> mImplications;
+  // For each assigned variable index, the clause that implied its value.
+  // The value for decided and unassigned variables is going to be nullptr.
+  std::vector<Clause*> mImplications;
 
   // For each assigned variable index, the decision level at which it was assigned to a value.
   // For unassigned variables, the value is going to be -1.
@@ -278,7 +179,15 @@ private:
   std::vector<Literal> mTrail;
   std::vector<int> mTrailIndices;
 
+  // Clause heuristics
+  std::vector<Clause*> mLearnedClauses;
+  double mMaxLearnedClauses;
+
   Statistics mStats;
+
+  void decayAndBumpClauseActivity(Clause& clauseToBump);
+
+  void reduce();
 };
 
 

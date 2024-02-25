@@ -110,6 +110,11 @@ Status Solver::check()
 
       int decisionVariable = pickDecisionVariable();
       nextDecision = {decisionVariable, true};
+
+      if (mLearnedClauses.size() >= mMaxLearnedClauses) {
+        this->reduce();
+      }
+
     } else {
       // We reached a conflict, perform backtracking
       this->backtrack();
@@ -162,21 +167,20 @@ bool Solver::propagate()
 
   while (!queue.empty()) {
     int lastAssigned = queue.front();
-    const std::vector<int>& clausesToCheck = mWatches[lastAssigned];
+    const std::vector<Clause*>& clausesToCheck = mWatches[lastAssigned];
     queue.pop_front();
-    for (int i : clausesToCheck) {
-      const auto& clause = mClauses[i];
-      auto clauseStatus = checkClause(clause);
+    for (Clause* clause : clausesToCheck) {
+      auto clauseStatus = checkClause(*clause);
       if (clauseStatus == ClauseStatus::Conflicting) {
         mStats.conflicts++;
-        this->analyzeConflict(i);
+        this->analyzeConflict(*clause);
         return false;
       }
 
       if (clauseStatus == ClauseStatus::Unit) {
         // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
-        Literal lastLiteral = unassignedLiteral(clause);
-        this->assignUnitClause(lastLiteral, i);
+        Literal lastLiteral = unassignedLiteral(*clause);
+        this->assignUnitClause(lastLiteral, *clause);
         queue.emplace_back(lastLiteral.index());
       }
     }
@@ -185,7 +189,7 @@ bool Solver::propagate()
   return true;
 }
 
-void Solver::analyzeConflict(int conflictClauseIndex)
+void Solver::analyzeConflict(Clause& conflictClause)
 {
   // Find a cut of the implication graph through a unique implication point (UIP).
   // The UIP is a node at decision level `d` such that every path from the decision variable at level `d` to the
@@ -195,23 +199,26 @@ void Solver::analyzeConflict(int conflictClauseIndex)
   //  - B contains all successors of `l` where there is a path to the conflict node
   //  - A contains all the rest of nodes
 
-  // TODO: There is a more sophisticated linear-time algorithm described in the Minisat paper
-  // If we are propagating top-level, there is no last decision
+  // If we are propagating top-level, there is no last decision.
   if (mDecisions.empty()) {
     return;
   }
 
-  std::vector<Literal> newClause = this->firstUniqueImplicationPointCut(conflictClauseIndex);
+  this->decayAndBumpClauseActivity(conflictClause);
+
+  std::vector<Literal> newClause = this->firstUniqueImplicationPointCut(conflictClause);
   if (!newClause.empty()) {
     mStats.learnedClauses++;
     std::ranges::sort(newClause);
     newClause.erase(std::unique(newClause.begin(), newClause.end()), newClause.end());
 
-    mClauses.emplace_back(newClause, true);
-    for (Literal lit : newClause) {
-      mWatches[lit.index()].push_back(static_cast<int>(mClauses.size() - 1));
+    Clause& inserted = mClauses.emplace_back(newClause, true);
+    mLearnedClauses.push_back(&inserted);
+
+    for (Literal lit : inserted) {
+      mWatches[lit.index()].push_back(&mClauses.back());
     }
-    mWatches[0].push_back(static_cast<int>(mClauses.size() - 1));
+    mWatches[0].push_back(&mClauses.back());
 
     // Decay all activities
     for (int i = 1; i < mActivity.size(); ++i) {
@@ -219,7 +226,7 @@ void Solver::analyzeConflict(int conflictClauseIndex)
     }
 
     // Bump activity of related variables
-    for (Literal lit : newClause) {
+    for (Literal lit : inserted) {
       mActivity[lit.index()] += 1;
     }
   }
@@ -273,7 +280,7 @@ std::vector<Literal> Solver::lastUniqueImplicationPointCut(int conflictClauseInd
 // The new clause contains the negation of literals that have edges from the predecessors side (R) to the conflict side (C).
 //
 // The basic idea of the algorithm is to perform a backwards breadth-first traversal on the implication graph, until we find the first UIP.
-std::vector<Literal> Solver::firstUniqueImplicationPointCut(int conflictClauseIndex)
+std::vector<Literal> Solver::firstUniqueImplicationPointCut(const Clause& conflictClause)
 {
   // Track the variables
   std::vector<bool> seen(mVariableState.size(), false);
@@ -285,7 +292,6 @@ std::vector<Literal> Solver::firstUniqueImplicationPointCut(int conflictClauseIn
 
   // Track the predecessors of the currently processed literal. In the first step, we start from the conflict node,
   // so we start with its predecessor set, i.e. the literals of the conflict clause.
-  const Clause& conflictClause = mClauses[conflictClauseIndex];
   std::vector<Literal> predecessors;
   predecessors.reserve(conflictClause.size());
 
@@ -336,14 +342,12 @@ std::vector<Literal> Solver::firstUniqueImplicationPointCut(int conflictClauseIn
 void Solver::fillImplyingPredecessors(Literal lit, std::vector<Literal>& result)
 {
   int literalIndex = lit.index();
-  int impliedByClause = mImplications[literalIndex];
-  if (impliedByClause == UnknownIndex) {
+  Clause* implyingClause = mImplications[literalIndex];
+  if (implyingClause == nullptr) {
     return;
   }
 
-  Clause& implyingClause = mClauses[impliedByClause];
-
-  for (Literal clauseLit : implyingClause) {
+  for (Literal clauseLit : *implyingClause) {
     if (clauseLit.index() != literalIndex) {
       result.emplace_back(clauseLit.index(), mVariableState[clauseLit.index()] == Tribool::True);
     }
@@ -357,6 +361,7 @@ void Solver::backtrack()
   if (learnedClause.size() == 1) {
     // If a unit clause is learned, we want to jump back to the top level and propagate it.
     this->popDecisionUntil(1);
+    return;
   }
 
   // Determine the backtrack level: this should be the second-largest decision level of the literals in the learned clause.
@@ -401,10 +406,10 @@ void Solver::assignVariable(Literal literal)
 }
 
 Solver::Solver(const Instance& instance)
-  : mWatches(instance.numVariables() + 1, std::vector<int>{}),
+  : mWatches(instance.numVariables() + 1, std::vector<Clause*>{}),
     mVariableState(instance.numVariables() + 1, Tribool::Unknown),
     mActivity(instance.numVariables() + 1, 1.0),
-    mImplications(instance.numVariables() + 1, UnknownIndex),
+    mImplications(instance.numVariables() + 1, nullptr),
     mAssignedAtLevel(instance.numVariables() + 1, UnknownIndex)
 {
   mClauses.reserve(instance.clauses().size());
@@ -415,6 +420,8 @@ Solver::Solver(const Instance& instance)
     }
     mClauses.emplace_back(literals);
   }
+
+  mMaxLearnedClauses = mClauses.size() * DefaultMaxLearnedFactor;
 }
 
 void Solver::popDecision()
@@ -449,7 +456,12 @@ void Solver::undoAssignment(size_t variableIndex)
 
   mVariableState[variableIndex] = Tribool::Unknown;
   mAssignedAtLevel[variableIndex] = UnknownIndex;
-  mImplications[variableIndex] = UnknownIndex;
+
+  Clause* impliedClause = mImplications[variableIndex];
+  if (impliedClause != nullptr) {
+    impliedClause->unlock();
+  }
+  mImplications[variableIndex] = nullptr;
 }
 
 void Solver::pushDecision(Literal literal)
@@ -459,14 +471,15 @@ void Solver::pushDecision(Literal literal)
   this->assignVariable(literal);
 }
 
-void Solver::assignUnitClause(Literal literal, int clauseIndex)
+void Solver::assignUnitClause(Literal literal, Clause& clause)
 {
   mStats.propagations++;
   int variableIndex = literal.index();
-  assert(mImplications[variableIndex] == UnknownIndex && "No implications should exists for a freshly assigned unit clause");
+  assert(mImplications[variableIndex] == nullptr && "No implications should exists for a freshly assigned unit clause");
 
   this->assignVariable(literal);
-  mImplications[variableIndex] = clauseIndex;
+  mImplications[variableIndex] = &clause;
+  clause.lock();
 }
 
 bool Solver::simplify()
@@ -495,7 +508,7 @@ bool Solver::simplify()
     }
 
     for (int i = 1; i < mVariableState.size(); ++i) {
-      bool isPure = positive[i] ^ negative[i];
+      bool isPure = positive[i] != negative[i];
       if (isPure && mVariableState[i] == Tribool::Unknown) {
         if (positive[i]) {
           this->assignVariable(Literal{i, true});
@@ -531,24 +544,53 @@ bool Solver::simplify()
 
     // Deleting clauses changed clause indices: re-initialize watches and reset the implications graph.
     this->resetWatches();
-    std::ranges::fill(mImplications, UnknownIndex);
+    std::ranges::fill(mImplications, nullptr);
   }
 
   return true;
 }
 
+void Solver::reduce()
+{
+//  std::ranges::sort(mLearnedClauses, [](Clause* a, Clause *b) {
+//    return a->activity() < b->activity();
+//  });
+//
+//  std::vector<Clause*> clausesToRemove;
+//  clausesToRemove.reserve(mLearnedClauses.size() / 2);
+//
+//  for (int i = 0; i < mLearnedClauses.size() / 2; ++i) {
+//    if (!mLearnedClauses[i]->isLocked()) {
+//      clausesToRemove.push_back(mLearnedClauses[i]);
+//    }
+//  }
+//  std::ranges::sort(clausesToRemove);
+//
+//  std::erase_if(mLearnedClauses, [&clausesToRemove](Clause* c) {
+//    return std::ranges::binary_search(clausesToRemove, c);
+//  });
+//  std::erase_if(mClauses, [&clausesToRemove](Clause& c) {
+//    return std::ranges::binary_search(clausesToRemove, &c);
+//  });
+//
+//  mStats.clausesEliminatedByActivity += clausesToRemove.size();
+//
+//  // Clause removal invalidated all watches
+//  this->resetWatches();
+}
+
 void Solver::resetWatches()
 {
-  std::ranges::for_each(mWatches, [](std::vector<int>& v) {
+  std::ranges::for_each(mWatches, [](std::vector<Clause*>& v) {
     v.clear();
   });
 
   mWatches[0].reserve(mClauses.size());
-  for (int i = 0; i < mClauses.size(); ++i) {
-    for (Literal lit : mClauses[i]) {
-      mWatches[lit.index()].push_back(i);
+  for (Clause& clause : mClauses) {
+    for (Literal lit : clause) {
+      mWatches[lit.index()].push_back(&clause);
     }
-    mWatches[0].push_back(i);
+    mWatches[0].push_back(&clause);
   }
 }
 
@@ -570,6 +612,15 @@ int Solver::pickDecisionVariable() const
   assert(maxActivityIndex != -1 && "There must be an unassigned index in a valid solver state!");
   return maxActivityIndex;
 }
+
+void Solver::decayAndBumpClauseActivity(Clause& clauseToBump)
+{
+  for (Clause* clause : mLearnedClauses) {
+    clause->decayActivity(DefaultClauseDecay);
+  }
+  clauseToBump.bumpActivity(1);
+}
+
 
 std::vector<bool> Instance::model() const
 {

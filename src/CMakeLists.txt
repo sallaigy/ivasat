@@ -1,4 +1,4 @@
-set(SOURCES Solver.cpp DimacsParser.cpp main.cpp SolverUtils.cpp)
+set(SOURCES Solver.cpp Clause.cpp DimacsParser.cpp main.cpp SolverUtils.cpp)
 
 add_library(libivasat ${SOURCES})
 

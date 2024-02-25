@@ -7,7 +7,7 @@
 
 static std::unique_ptr<ivasat::Solver> solver;
 
-static void interrupt_solver([[maybe_unused]] int num)
+[[noreturn]] static void interrupt_solver([[maybe_unused]] int num)
 {
   solver->dumpStats(std::cout);
   exit(1);
@@ -27,6 +27,9 @@ int main(int argc, char* argv[])
   solver = std::make_unique<ivasat::Solver>(*instance);
 
   signal(SIGINT, interrupt_solver);
+
+  std::cout << "Variables: " << instance->numVariables() << "\n";
+  std::cout << "Clauses: " << instance->clauses().size() << "\n";
 
   auto status = solver->check();
   solver->dumpStats(std::cout);

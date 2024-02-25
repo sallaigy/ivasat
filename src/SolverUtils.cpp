@@ -43,6 +43,7 @@ void Solver::dumpStats(std::ostream& os) const
   os << "Propagations: " << mStats.propagations << "\n";
   os << "Restarts: " << mStats.restarts << "\n";
   os << "Clauses eliminated by simplification: " << mStats.clausesEliminatedBySimplification << "\n";
+  os << "Clauses eliminated by activity heuristics: " << mStats.clausesEliminatedByActivity << "\n";
   os << "Pure literals found: " << mStats.pureLiterals << "\n";
 }
 
@@ -67,13 +68,18 @@ void Solver::dumpImplicationGraph(int conflictClauseIndex)
   }
 
   for (int i = 0; i < mImplications.size(); ++i) {
-    int clauseIdx = mImplications[i];
-
-    if (clauseIdx == UnknownIndex) {
+    const Clause* clause = mImplications[i];
+    if (clause == nullptr) {
       continue;
     }
 
-    for (Literal lit : mClauses[clauseIdx]) {
+    auto clausePos = std::ranges::find_if(mClauses, [clause](const Clause& c) {
+      return &c == clause;
+    });
+
+    size_t clauseIdx = std::distance(std::begin(mClauses), clausePos);
+
+    for (Literal lit : *clause) {
       if (lit.index() != i) {
         ss << "node_" << lit.index() << " -> " << "node_" << i << "[label=\"  " << clauseIdx << "\"];\n";
       }
