@@ -87,7 +87,6 @@ if __name__ == "__main__":
     total_solver_time = 0
     for test in tests:
         test_name = str(test)
-        print(f'{test_name:{max_len + 4}}', end='', flush=True)
         status = run_ivasat(tool, test, timeout_value)
 
         num_timeouts += 1 if status[0] == Result.TIMEOUT else 0
@@ -96,9 +95,10 @@ if __name__ == "__main__":
         total_solver_time += status[1]
         if args.minisat:
             minisat_status = run_minisat('minisat', test, timeout_value)
-            print(f'[{status[0]}, {status[1]:.2f}s, {minisat_status[0]}, {minisat_status[1]:.2f}]')
+            print(f'{test_name};{status[0]};{status[1]:.2f};{minisat_status[0]};{minisat_status[1]:.2f}',
+                  flush=True)
         else:
-            print(f'[{status[0]}, {status[1]:.2f}s]')
+            print(f'{test_name};{status[0]};{status[1]:.2f}', flush=True)
 
     print('================================')
     print(f'Total tests: {len(tests)}')
