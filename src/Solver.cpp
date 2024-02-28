@@ -473,6 +473,13 @@ bool Solver::simplify()
 {
   assert(mDecisions.empty() && "Simplification should only be called on the top level!");
 
+  if (mRestartsSinceLastSimplify < 32) {
+    mRestartsSinceLastSimplify += 1;
+    return this->propagate();
+  }
+
+  mRestartsSinceLastSimplify = 0;
+
   bool changed = true;
   while (changed) {
     changed = false;
