@@ -8,6 +8,7 @@
 #include <cassert>
 #include <queue>
 #include <set>
+#include <limits>
 
 namespace ivasat
 {
@@ -277,6 +278,9 @@ private:
   // List of assignments in chronological order.
   std::vector<Literal> mTrail;
   std::vector<int> mTrailIndices;
+
+  // Heuristics
+  unsigned mRestartsSinceLastSimplify = std::numeric_limits<unsigned>::max();
 
   Statistics mStats;
 };
