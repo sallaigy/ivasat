@@ -13,7 +13,7 @@ jobs:
         run: sudo apt-get install build-essential cmake wget lsb-release
       - name: Build
         run: |
-          cmake -B build -DDCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=On
+          cmake -B build -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=On
           cmake --build build/
       - name: Run unit tests
         run: cmake --build build/ --target test

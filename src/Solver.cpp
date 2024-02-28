@@ -1,7 +1,5 @@
 #include "Solver.h"
 
-#include <boost/dynamic_bitset.hpp>
-
 #include <set>
 #include <algorithm>
 #include <iostream>
@@ -486,31 +484,6 @@ bool Solver::simplify()
     
     if (!this->propagate()) {
       return false;
-    }
-  
-    // Find pure literals
-    boost::dynamic_bitset<> positive{mVariableState.size()};
-    boost::dynamic_bitset<> negative{mVariableState.size()};
-    for (const Clause& clause : mClauses) {
-      for (Literal lit : clause) {
-        if (lit.isNegated()) {
-          negative[lit.index()] = true;
-        } else {
-          positive[lit.index()] = true;
-        }
-      }
-    }
-
-    for (int i = 1; i < mVariableState.size(); ++i) {
-      bool isPure = positive[i] ^ negative[i];
-      if (isPure && mVariableState[i] == Tribool::Unknown) {
-        if (positive[i]) {
-          this->assignVariable(Literal{i, true});
-        } else if (negative[i]) {
-          this->assignVariable(Literal{i, false});
-        }
-        mStats.pureLiterals++;
-      }
     }
 
     auto first = std::remove_if(mClauses.begin(), mClauses.end(), [this](const Clause& clause) {
