@@ -87,14 +87,21 @@ Status Solver::check()
     return Status::Sat;
   }
 
+  Literal nextDecision = {pickDecisionVariable(), true};
+  this->pushDecision(nextDecision);
+
   // Start search
-  Literal nextDecision(pickDecisionVariable(), true);
-
   while (true) {
-    // Check if the current state is okay
-    this->pushDecision(nextDecision);
+    if (decisionLevel() == 0) {
+        // If we backtracked back to the top level, try to simplify the clause database.
+        if (bool simplifyResult = this->simplify(); !simplifyResult) {
+          return Status::Unsat;
+        } else if (numAssigned() == mVariableState.size() - 1) {
+          return Status::Sat;
+        }
+    }
 
-    mStats.decisions++;
+    // Check if the current state is okay
     if (numAssigned() == mVariableState.size() - 1) {
       mStats.checkedFullCombinations++;
     }
@@ -108,14 +115,39 @@ Status Solver::check()
 
       int decisionVariable = pickDecisionVariable();
       nextDecision = {decisionVariable, true};
+      this->pushDecision(nextDecision);
     } else {
       // We reached a conflict, perform backtracking
-      this->backtrack();
+      int varIdx = this->backtrack();
+      this->popDecision();
 
+      if (varIdx == UnknownIndex) {
+        return Status::Unsat;
+      }
+
+      this->enqueue(varIdx);
+
+//      if (decisionLevel() == 0) {
+//        mStats.restarts += 1;
+//        // If we backtracked back to the top level, try to simplify the clause database.
+//        if (bool simplifyResult = this->simplify(); !simplifyResult) {
+//          return Status::Unsat;
+//        } else if (numAssigned() == mVariableState.size() - 1) {
+//          return Status::Sat;
+//        }
+//
+//        int newDecisionVariable = pickDecisionVariable();
+//        nextDecision = {newDecisionVariable, true};
+//      }
+
+#if 0
       bool hasNextState = false;
+
       for (auto it = mDecisions.rbegin(); it != mDecisions.rend(); ++it) {
         int decidedVariable = it->index();
         Tribool previousVariableState = mVariableState[decidedVariable];
+        assert(previousVariableState != Tribool::Unknown);
+
         this->popDecision();
 
         if (decisionLevel() == 0) {
@@ -144,30 +176,35 @@ Status Solver::check()
       if (!hasNextState) {
         return Status::Unsat;
       }
+#endif
     }
   }
 }
 
 bool Solver::propagate()
 {
-  std::deque<int> queue;
-  if (mDecisions.empty()) {
-    // If we are propagating top level, we want to check all clauses
-    queue.emplace_back(0);
-  } else {
-    queue.emplace_back(mDecisions.back().index());
+  if (mQueue.empty() && decisionLevel() == 0) {
+    mQueue.emplace_back(0);
   }
+//  std::deque<int> queue;
+//  if (mDecisions.empty()) {
+//    // If we are propagating top level, we want to check all clauses
+//    queue.emplace_back(0);
+//  } else {
+//    queue.emplace_back(mDecisions.back().index());
+//  }
 
-  while (!queue.empty()) {
-    int lastAssigned = queue.front();
+  while (!mQueue.empty()) {
+    int lastAssigned = mQueue.front();
     const std::vector<int>& clausesToCheck = mWatches[lastAssigned];
-    queue.pop_front();
+    mQueue.pop_front();
     for (int i : clausesToCheck) {
       const auto& clause = mClauses[i];
       auto clauseStatus = checkClause(clause);
       if (clauseStatus == ClauseStatus::Conflicting) {
         mStats.conflicts++;
         this->analyzeConflict(i);
+        mQueue.clear();
         return false;
       }
 
@@ -175,7 +212,7 @@ bool Solver::propagate()
         // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
         Literal lastLiteral = unassignedLiteral(clause);
         this->assignUnitClause(lastLiteral, i);
-        queue.emplace_back(lastLiteral.index());
+        this->enqueue(lastLiteral.index());
       }
     }
   }
@@ -348,22 +385,26 @@ void Solver::fillImplyingPredecessors(Literal lit, std::vector<Literal>& result)
   }
 }
 
-void Solver::backtrack()
+int Solver::backtrack()
 {
   // We learned a new clause, check the backtracking level
   const Clause& learnedClause = mClauses.back();
   if (learnedClause.size() == 1) {
     // If a unit clause is learned, we want to jump back to the top level and propagate it.
     this->popDecisionUntil(1);
+    return learnedClause[0].index();
   }
 
   // Determine the backtrack level: this should be the second-largest decision level of the literals in the learned clause.
   int backtrackLevel = -1;
+  int varIdx = UnknownIndex;
+
   for (Literal lit: learnedClause) {
     if (lit.index() != mDecisions.back().index()) {
       int assignmentLevel = mAssignedAtLevel[lit.index()];
       if (backtrackLevel < assignmentLevel) {
         backtrackLevel = assignmentLevel;
+        varIdx = lit.index();
       }
     }
   }
@@ -371,6 +412,8 @@ void Solver::backtrack()
   if (backtrackLevel != -1) {
     this->popDecisionUntil(backtrackLevel);
   }
+
+  return learnedClause.back().index();
 }
 
 std::vector<bool> Solver::model() const
@@ -452,9 +495,11 @@ void Solver::undoAssignment(size_t variableIndex)
 
 void Solver::pushDecision(Literal literal)
 {
+  mStats.decisions++;
   mTrailIndices.emplace_back(mTrail.size());
   mDecisions.emplace_back(literal);
   this->assignVariable(literal);
+  mQueue.emplace_back(literal.index());
 }
 
 void Solver::assignUnitClause(Literal literal, int clauseIndex)
