@@ -23,7 +23,7 @@ public:
     assert(data != 0 && "Literal data must be strictly positive or negative!");
   }
 
-  Literal(int index, bool value)
+  constexpr Literal(int index, bool value)
     : mData(value ? index : -index)
   {
     assert(index > 0 && "A literal cannot have a zero or negative index!");
@@ -73,6 +73,11 @@ public:
   const Literal& operator[](int index) const
   {
     return mLiterals[index];
+  }
+
+  Literal back() const
+  {
+    return mLiterals.back();
   }
 
   bool isLearned() const
@@ -219,6 +224,11 @@ private:
     return Literal{0};
   }
 
+  void enqueue(int index)
+  {
+    mQueue.emplace_back(index);
+  }
+
   // Clause learning
   //==---------------------------------------------------------------------==//
 
@@ -246,7 +256,7 @@ private:
 
   int pickDecisionVariable() const;
 
-  void backtrack();
+  int backtrack();
 
   // Debug methods
   //==----------------------------------------------------------------------==//
@@ -266,6 +276,7 @@ private:
   std::vector<Tribool> mVariableState;
   std::vector<Literal> mDecisions;
   std::vector<double> mActivity;
+  std::deque<int> mQueue;
 
   // For each assigned variable index, the index of the clause that implied its value.
   // The value for decided and unassigned variables is going to be -1.
