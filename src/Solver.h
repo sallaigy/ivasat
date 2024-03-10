@@ -64,7 +64,6 @@ public:
   explicit Clause(std::vector<Literal> literals, bool isLearned = false)
     : mLiterals(std::move(literals)), mIsLearned(isLearned)
   {
-    std::ranges::sort(mLiterals);
   }
 
   Clause(const Clause&) = default;
@@ -197,17 +196,10 @@ private:
   /// Pop decisions until `level`.
   void popDecisionUntil(int level);
 
-  bool isValidChoice(int index, bool value)
-  {
-    return std::ranges::none_of(mTrail, [&](Literal lit) {
-      return lit.index() == index && lit.value() != value;
-    });
-  }
-
   // Unit propagation
   //==---------------------------------------------------------------------==//
 
-  bool propagate();
+  int propagate();
 
   ClauseStatus checkClause(const Clause& clause);
 
@@ -232,10 +224,10 @@ private:
   // Clause learning
   //==---------------------------------------------------------------------==//
 
-  void analyzeConflict(int conflictClauseIndex);
+  int analyzeConflict(int conflictClauseIndex);
 
   [[nodiscard]] std::vector<Literal> lastUniqueImplicationPointCut(int conflictClauseIndex);
-  [[nodiscard]] std::vector<Literal> firstUniqueImplicationPointCut(int conflictClauseIndex);
+  [[nodiscard]] int firstUniqueImplicationPointCut(int conflictClauseIndex, std::vector<Literal>& newClause);
 
   /// Calculates the predecessors of \p lit in the implication graph.
   void fillImplyingPredecessors(Literal lit, std::vector<Literal>& result);
