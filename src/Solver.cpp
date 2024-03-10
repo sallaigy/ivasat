@@ -81,131 +81,54 @@ Status Solver::check()
 
   this->preprocess();
 
-  if (bool propagationResult = this->simplify(); !propagationResult) {
-    return Status::Unsat;
-  } else if (numAssigned() == mVariableState.size() - 1) {
-    return Status::Sat;
-  }
-
-  Literal nextDecision = {pickDecisionVariable(), true};
-  this->pushDecision(nextDecision);
-
   // Start search
   while (true) {
-    if (decisionLevel() == 0) {
-        // If we backtracked back to the top level, try to simplify the clause database.
-        if (bool simplifyResult = this->simplify(); !simplifyResult) {
-          return Status::Unsat;
-        } else if (numAssigned() == mVariableState.size() - 1) {
-          return Status::Sat;
-        }
-    }
+    int conflictClause = this->propagate();
+    if (conflictClause != UnknownIndex) {
+      mStats.conflicts++;
 
-    // Check if the current state is okay
-    if (numAssigned() == mVariableState.size() - 1) {
-      mStats.checkedFullCombinations++;
-    }
+      if (decisionLevel() == 0) {
+        return Status::Unsat;
+      }
 
-    bool successfulPropagation = this->propagate();
-    if (successfulPropagation) {
+      // We reached a conflict, perform backtracking
+      int backtrackLevel = this->analyzeConflict(conflictClause);
+      this->popDecisionUntil(backtrackLevel);
+      this->enqueue(mClauses.back().back().index());
+    } else {
       // Is this a complete state?
       if (numAssigned() == mVariableState.size() - 1) {
         return Status::Sat;
       }
 
+      if (decisionLevel() == 0) {
+        this->simplify();
+      }
+
       int decisionVariable = pickDecisionVariable();
-      nextDecision = {decisionVariable, true};
+      Literal nextDecision = {decisionVariable, true};
       this->pushDecision(nextDecision);
-    } else {
-      // We reached a conflict, perform backtracking
-      int varIdx = this->backtrack();
-      this->popDecision();
-
-      if (varIdx == UnknownIndex) {
-        return Status::Unsat;
-      }
-
-      this->enqueue(varIdx);
-
-//      if (decisionLevel() == 0) {
-//        mStats.restarts += 1;
-//        // If we backtracked back to the top level, try to simplify the clause database.
-//        if (bool simplifyResult = this->simplify(); !simplifyResult) {
-//          return Status::Unsat;
-//        } else if (numAssigned() == mVariableState.size() - 1) {
-//          return Status::Sat;
-//        }
-//
-//        int newDecisionVariable = pickDecisionVariable();
-//        nextDecision = {newDecisionVariable, true};
-//      }
-
-#if 0
-      bool hasNextState = false;
-
-      for (auto it = mDecisions.rbegin(); it != mDecisions.rend(); ++it) {
-        int decidedVariable = it->index();
-        Tribool previousVariableState = mVariableState[decidedVariable];
-        assert(previousVariableState != Tribool::Unknown);
-
-        this->popDecision();
-
-        if (decisionLevel() == 0) {
-          mStats.restarts += 1;
-          // If we backtracked back to the top level, try to simplify the clause database.
-          if (bool simplifyResult = this->simplify(); !simplifyResult) {
-            return Status::Unsat;
-          } else if (numAssigned() == mVariableState.size() - 1) {
-            return Status::Sat;
-          }
-
-          int newDecisionVariable = pickDecisionVariable();
-          nextDecision = {newDecisionVariable, true};
-          hasNextState = true;
-          break;
-        }
-
-        bool possibleValue = previousVariableState != Tribool::True;
-        if (previousVariableState == Tribool::True && isValidChoice(decidedVariable, possibleValue)) {
-          nextDecision = {decidedVariable, false};
-          hasNextState = true;
-          break;
-        }
-      }
-
-      if (!hasNextState) {
-        return Status::Unsat;
-      }
-#endif
     }
   }
 }
 
-bool Solver::propagate()
+int Solver::propagate()
 {
   if (mQueue.empty() && decisionLevel() == 0) {
+    // If we are propagating top level, we want to check all clauses
     mQueue.emplace_back(0);
   }
-//  std::deque<int> queue;
-//  if (mDecisions.empty()) {
-//    // If we are propagating top level, we want to check all clauses
-//    queue.emplace_back(0);
-//  } else {
-//    queue.emplace_back(mDecisions.back().index());
-//  }
 
   while (!mQueue.empty()) {
     int lastAssigned = mQueue.front();
     const std::vector<int>& clausesToCheck = mWatches[lastAssigned];
     mQueue.pop_front();
     for (int i : clausesToCheck) {
-      const auto& clause = mClauses[i];
+      const Clause& clause = mClauses[i];
       auto clauseStatus = checkClause(clause);
       if (clauseStatus == ClauseStatus::Conflicting) {
-        mStats.conflicts++;
-        this->analyzeConflict(i);
         mQueue.clear();
-        return false;
+        return i;
       }
 
       if (clauseStatus == ClauseStatus::Unit) {
@@ -217,10 +140,10 @@ bool Solver::propagate()
     }
   }
 
-  return true;
+  return UnknownIndex;
 }
 
-void Solver::analyzeConflict(int conflictClauseIndex)
+int Solver::analyzeConflict(int conflictClauseIndex)
 {
   // Find a cut of the implication graph through a unique implication point (UIP).
   // The UIP is a node at decision level `d` such that every path from the decision variable at level `d` to the
@@ -230,34 +153,27 @@ void Solver::analyzeConflict(int conflictClauseIndex)
   //  - B contains all successors of `l` where there is a path to the conflict node
   //  - A contains all the rest of nodes
 
-  // TODO: There is a more sophisticated linear-time algorithm described in the Minisat paper
-  // If we are propagating top-level, there is no last decision
-  if (mDecisions.empty()) {
-    return;
+  std::vector<Literal> newClause;
+  int backtrackLevel = this->firstUniqueImplicationPointCut(conflictClauseIndex, newClause);
+
+  mClauses.emplace_back(newClause, true);
+  mStats.learnedClauses++;
+  for (Literal lit : newClause) {
+    mWatches[lit.index()].push_back(static_cast<int>(mClauses.size() - 1));
+  }
+  mWatches[0].push_back(static_cast<int>(mClauses.size() - 1));
+
+  // Decay all activities
+  for (int i = 1; i < mActivity.size(); ++i) {
+    mActivity[i] *= DefaultActivityDecay;
   }
 
-  std::vector<Literal> newClause = this->firstUniqueImplicationPointCut(conflictClauseIndex);
-  if (!newClause.empty()) {
-    mStats.learnedClauses++;
-    std::ranges::sort(newClause);
-    newClause.erase(std::unique(newClause.begin(), newClause.end()), newClause.end());
-
-    mClauses.emplace_back(newClause, true);
-    for (Literal lit : newClause) {
-      mWatches[lit.index()].push_back(static_cast<int>(mClauses.size() - 1));
-    }
-    mWatches[0].push_back(static_cast<int>(mClauses.size() - 1));
-
-    // Decay all activities
-    for (int i = 1; i < mActivity.size(); ++i) {
-      mActivity[i] *= DefaultActivityDecay;
-    }
-
-    // Bump activity of related variables
-    for (Literal lit : newClause) {
-      mActivity[lit.index()] += 1;
-    }
+  // Bump activity of related variables
+  for (Literal lit : newClause) {
+    mActivity[lit.index()] += 1;
   }
+
+  return backtrackLevel;
 }
 
 std::vector<Literal> Solver::lastUniqueImplicationPointCut(int conflictClauseIndex)
@@ -308,7 +224,7 @@ std::vector<Literal> Solver::lastUniqueImplicationPointCut(int conflictClauseInd
 // The new clause contains the negation of literals that have edges from the predecessors side (R) to the conflict side (C).
 //
 // The basic idea of the algorithm is to perform a backwards breadth-first traversal on the implication graph, until we find the first UIP.
-std::vector<Literal> Solver::firstUniqueImplicationPointCut(int conflictClauseIndex)
+int Solver::firstUniqueImplicationPointCut(int conflictClauseIndex, std::vector<Literal>& newClause)
 {
   // Track the variables
   std::vector<bool> seen(mVariableState.size(), false);
@@ -316,7 +232,8 @@ std::vector<Literal> Solver::firstUniqueImplicationPointCut(int conflictClauseIn
   int counter = 0;
   size_t trailIdx = mTrail.size() - 1;
 
-  std::vector<Literal> newClause;
+  newClause.clear();
+  int backtrackLevel = 0;
 
   // Track the predecessors of the currently processed literal. In the first step, we start from the conflict node,
   // so we start with its predecessor set, i.e. the literals of the conflict clause.
@@ -344,6 +261,7 @@ std::vector<Literal> Solver::firstUniqueImplicationPointCut(int conflictClauseIn
         //
         // We exclude literals from the top level as they were assigned as part of pre-processing and simplification.
         newClause.push_back(lit.negate());
+        backtrackLevel = std::max(backtrackLevel, mAssignedAtLevel[lit.index()]);
       }
     }
 
@@ -363,7 +281,7 @@ std::vector<Literal> Solver::firstUniqueImplicationPointCut(int conflictClauseIn
     counter--;
     if (counter == 0) {
       newClause.push_back(nextLit.negate());
-      return newClause;
+      return backtrackLevel;
     }
   }
 }
@@ -391,26 +309,24 @@ int Solver::backtrack()
   const Clause& learnedClause = mClauses.back();
   if (learnedClause.size() == 1) {
     // If a unit clause is learned, we want to jump back to the top level and propagate it.
-    this->popDecisionUntil(1);
-    return learnedClause[0].index();
+    this->popDecisionUntil(0);
+    return learnedClause.back().index();
   }
 
   // Determine the backtrack level: this should be the second-largest decision level of the literals in the learned clause.
   int backtrackLevel = -1;
-  int varIdx = UnknownIndex;
 
   for (Literal lit: learnedClause) {
     if (lit.index() != mDecisions.back().index()) {
       int assignmentLevel = mAssignedAtLevel[lit.index()];
       if (backtrackLevel < assignmentLevel) {
         backtrackLevel = assignmentLevel;
-        varIdx = lit.index();
       }
     }
   }
 
   if (backtrackLevel != -1) {
-    this->popDecisionUntil(backtrackLevel);
+    this->popDecisionUntil(backtrackLevel - 1);
   }
 
   return learnedClause.back().index();
@@ -518,7 +434,7 @@ bool Solver::simplify()
 
   if (mRestartsSinceLastSimplify < 32) {
     mRestartsSinceLastSimplify += 1;
-    return this->propagate();
+    return this->propagate() == UnknownIndex;
   }
 
   mRestartsSinceLastSimplify = 0;
@@ -527,7 +443,7 @@ bool Solver::simplify()
   while (changed) {
     changed = false;
     
-    if (!this->propagate()) {
+    if (this->propagate() != UnknownIndex) {
       return false;
     }
 
