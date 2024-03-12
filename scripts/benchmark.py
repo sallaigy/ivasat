@@ -6,6 +6,7 @@ import os
 import argparse
 import typing
 import time
+import re
 from pathlib import Path
 from enum import Enum
 
@@ -17,7 +18,15 @@ class Result(Enum):
     TIMEOUT = 4
 
 
-def run_ivasat(path: str, filename: Path, timeout: int) -> typing.Tuple[Result, float]:
+class ResultData:
+    def __init__(self, status: Result, time: float = 0, conflicts: int = 0, decisions: int = 0):
+        self.status = status
+        self.time = time
+        self.conflicts = conflicts
+        self.decisions = decisions
+
+
+def run_ivasat(path: str, filename: Path, timeout: int) -> ResultData:
     try:
         start = time.time()
         captured_output = subprocess.run([path, str(filename)], stdout=subprocess.PIPE, timeout=timeout)
@@ -25,19 +34,29 @@ def run_ivasat(path: str, filename: Path, timeout: int) -> typing.Tuple[Result, 
         ivasat_stdout = captured_output.stdout.decode()
 
         if 'Sat' == ivasat_stdout.splitlines(keepends=False)[-1]:
-            return Result.SAT, stop - start
+            m = re.search(r"Decisions: (\d+)", ivasat_stdout)
+            num_decisions = int(m.group(1))
+            m = re.search(r'Conflicts: (\d+)', ivasat_stdout)
+            num_conflicts = int(m.group(1))
+
+            return ResultData(Result.SAT, stop - start, conflicts=num_conflicts, decisions=num_decisions)
         elif 'Unsat' == ivasat_stdout.splitlines(keepends=False)[-1]:
-            return Result.UNSAT, stop - start
+            m = re.search(r'Decisions: (\d+)', ivasat_stdout)
+            num_decisions = int(m.group(1))
+            m = re.search(r'Conflicts: (\d+)', ivasat_stdout)
+            num_conflicts = int(m.group(1))
+
+            return ResultData(Result.UNSAT, stop - start, conflicts=num_conflicts, decisions=num_decisions)
 
     except subprocess.TimeoutExpired:
-        return Result.TIMEOUT, timeout
+        return ResultData(Result.TIMEOUT, timeout)
     except Exception as ex:
         print(ex, file=sys.stderr)
 
-    return Result.ERROR, 0
+    return ResultData(Result.ERROR, 0)
 
 
-def run_minisat(path: str, filename: Path, timeout: int) -> typing.Tuple[Result, float]:
+def run_minisat(path: str, filename: Path, timeout: int) -> ResultData:
     try:
         start = time.time()
         captured_output = subprocess.run([path, '-no-elim', str(filename)], stdout=subprocess.PIPE, timeout=timeout)
@@ -45,16 +64,24 @@ def run_minisat(path: str, filename: Path, timeout: int) -> typing.Tuple[Result,
         ivasat_stdout = captured_output.stdout.decode()
 
         if 'SATISFIABLE' == ivasat_stdout.splitlines(keepends=False)[-1]:
-            return Result.SAT, stop - start
+            m = re.search('decisions\s+: (\\d+)', ivasat_stdout)
+            num_decisions = int(m.group(1))
+            m = re.search('conflicts\s+: (\\d+)', ivasat_stdout)
+            num_conflicts = int(m.group(1))
+            return ResultData(Result.SAT, stop - start, conflicts=num_conflicts, decisions=num_decisions)
         elif 'UNSATISFIABLE' == ivasat_stdout.splitlines(keepends=False)[-1]:
-            return Result.UNSAT, stop - start
+            m = re.search('decisions\s+: (\\d+)', ivasat_stdout)
+            num_decisions = int(m.group(1))
+            m = re.search('conflicts\s+: (\\d+)', ivasat_stdout)
+            num_conflicts = int(m.group(1))
+            return ResultData(Result.UNSAT, stop - start, conflicts=num_conflicts, decisions=num_decisions)
 
     except subprocess.TimeoutExpired:
-        return Result.TIMEOUT, timeout
+        return ResultData(Result.TIMEOUT, timeout)
     except Exception as ex:
         print(ex, file=sys.stderr)
 
-    return Result.ERROR, 0
+    return ResultData(Result.ERROR, 0)
 
 
 def discover_tests(path: Path):
@@ -87,21 +114,15 @@ if __name__ == "__main__":
     total_solver_time = 0
     for test in tests:
         test_name = str(test)
-        status = run_ivasat(tool, test, timeout_value)
+        result = run_ivasat(tool, test, timeout_value)
 
-        num_timeouts += 1 if status[0] == Result.TIMEOUT else 0
-        num_errors += 1 if status[0] == Result.ERROR else 0
+        num_timeouts += 1 if result.status == Result.TIMEOUT else 0
+        num_errors += 1 if result.status == Result.ERROR else 0
 
-        total_solver_time += status[1]
+        total_solver_time += result.time
         if args.minisat:
-            minisat_status = run_minisat('minisat', test, timeout_value)
-            print(f'{test_name};{status[0]};{status[1]:.2f};{minisat_status[0]};{minisat_status[1]:.2f}',
+            minisat_result = run_minisat('minisat', test, timeout_value)
+            print(f'{test_name};{result.status};{result.time:.2f};{result.decisions};{result.conflicts};{minisat_result.status};{minisat_result.time:.2f};{minisat_result.decisions};{minisat_result.conflicts};',
                   flush=True)
         else:
-            print(f'{test_name};{status[0]};{status[1]:.2f}', flush=True)
-
-    print('================================')
-    print(f'Total tests: {len(tests)}')
-    print(f'Timeouts: {num_timeouts}')
-    print(f'Errors: {num_errors}')
-    print(f'Total time: {total_solver_time}')
+            print(f'{test_name};{result.status};{result.time:.2f};{result.decisions};{result.conflicts};', flush=True)
