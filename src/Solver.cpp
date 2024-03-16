@@ -94,7 +94,7 @@ Status Solver::check()
       // We reached a conflict, perform backtracking
       int backtrackLevel = this->analyzeConflict(conflictClause);
       this->popDecisionUntil(backtrackLevel);
-      this->enqueue(mClauses.back().back().index());
+      this->assignUnitClause(mClauses.back().back(), mClauses.size() - 1);
     } else {
       // Is this a complete state?
       if (numAssigned() == mVariableState.size() - 1) {
@@ -135,7 +135,6 @@ int Solver::propagate()
         // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
         Literal lastLiteral = unassignedLiteral(clause);
         this->assignUnitClause(lastLiteral, i);
-        this->enqueue(lastLiteral.index());
       }
     }
   }
@@ -357,6 +356,12 @@ void Solver::assignVariable(Literal literal)
   mTrail.push_back(literal);
 }
 
+void Solver::enqueue(Literal literal)
+{
+  this->assignVariable(literal);
+  mQueue.emplace_back(literal.index());
+}
+
 Solver::Solver(const Instance& instance)
   : mWatches(instance.numVariables() + 1, std::vector<int>{}),
     mVariableState(instance.numVariables() + 1, Tribool::Unknown),
@@ -414,8 +419,7 @@ void Solver::pushDecision(Literal literal)
   mStats.decisions++;
   mTrailIndices.emplace_back(mTrail.size());
   mDecisions.emplace_back(literal);
-  this->assignVariable(literal);
-  mQueue.emplace_back(literal.index());
+  this->enqueue(literal);
 }
 
 void Solver::assignUnitClause(Literal literal, int clauseIndex)
@@ -424,20 +428,13 @@ void Solver::assignUnitClause(Literal literal, int clauseIndex)
   int variableIndex = literal.index();
   assert(mImplications[variableIndex] == UnknownIndex && "No implications should exists for a freshly assigned unit clause");
 
-  this->assignVariable(literal);
   mImplications[variableIndex] = clauseIndex;
+  this->enqueue(literal);
 }
 
 bool Solver::simplify()
 {
   assert(mDecisions.empty() && "Simplification should only be called on the top level!");
-
-  if (mRestartsSinceLastSimplify < 32) {
-    mRestartsSinceLastSimplify += 1;
-    return this->propagate() == UnknownIndex;
-  }
-
-  mRestartsSinceLastSimplify = 0;
 
   bool changed = true;
   while (changed) {

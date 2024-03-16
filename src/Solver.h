@@ -216,10 +216,7 @@ private:
     return Literal{0};
   }
 
-  void enqueue(int index)
-  {
-    mQueue.emplace_back(index);
-  }
+  void enqueue(Literal literal);
 
   // Clause learning
   //==---------------------------------------------------------------------==//
