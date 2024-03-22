@@ -69,6 +69,11 @@ public:
   Clause(const Clause&) = default;
   Clause& operator=(const Clause&) = default;
 
+  Literal& operator[](int index)
+  {
+    return mLiterals[index];
+  }
+
   const Literal& operator[](int index) const
   {
     return mLiterals[index];
@@ -156,6 +161,12 @@ class Solver
     unsigned pureLiterals = 0;
   };
 
+  struct Watch
+  {
+    int clauseIdx;
+    Literal lit;
+  };
+
   static constexpr int UnknownIndex = -1;
 
   static constexpr double DefaultActivityDecay = 0.9;
@@ -172,11 +183,10 @@ public:
   // Solver implementation
   //==---------------------------------------------------------------------==//
 private:
-  /// Simplify the clause database, propagating unit clauses and removing propagated values.
-  /// \return False if the simplified clause database contains an empty clause, otherwise true.
-  [[nodiscard]] bool simplify();
+  /// Simplify the clause database, removing false literals and true clauses.
+  void simplify();
 
-  void preprocess();
+  bool preprocess();
 
   void resetWatches();
 
@@ -259,7 +269,7 @@ private:
 
   // Clause database
   std::vector<Clause> mClauses;
-  std::vector<std::vector<int>> mWatches;
+  std::vector<std::vector<Watch>> mWatches;
 
   // Internal solver state
   std::vector<Tribool> mVariableState;
@@ -283,6 +293,10 @@ private:
   unsigned mRestartsSinceLastSimplify = std::numeric_limits<unsigned>::max();
 
   Statistics mStats;
+
+  void watchClause(int clause);
+
+  Tribool value(Literal literal);
 };
 
 

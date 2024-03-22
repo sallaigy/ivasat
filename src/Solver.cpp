@@ -48,14 +48,12 @@ Solver::ClauseStatus Solver::checkClause(const Clause& clause)
   return status;
 }
 
-void Solver::preprocess()
+bool Solver::preprocess()
 {
   // Order clauses by size
   std::ranges::sort(mClauses, [](auto& l, auto& r) {
     return l.size() < r.size();
   });
-
-  this->resetWatches();
 
   // Find unused variables and set them to true
   std::vector<int> usages(mVariableState.size(), 0);
@@ -67,9 +65,30 @@ void Solver::preprocess()
 
   for (int i = 1; i < usages.size(); ++i) {
     if (usages[i] == 0) {
-      this->assignVariable(Literal{i, true});
+      this->enqueue(Literal{i, true});
     }
   }
+
+  // Learn unit clauses as facts
+  for (Clause& clause : mClauses) {
+    if (clause.size() == 0) {
+      return false;
+    }
+
+    if (clause.size() == 1) {
+      Literal literal = clause[0];
+      if (mVariableState[literal.index()] == Tribool::Unknown) {
+        this->enqueue(literal);
+      } else if (mVariableState[literal.index()] != liftBool(literal.value())) {
+        // Conflicting assignment, the instance is unsat
+        return false;
+      }
+    }
+  }
+
+  this->resetWatches();
+
+  return true;
 }
 
 Status Solver::check()
@@ -79,7 +98,9 @@ Status Solver::check()
     return Status::Sat;
   }
 
-  this->preprocess();
+  if (!this->preprocess()) {
+    return Status::Unsat;
+  }
 
   // Start search
   while (true) {
@@ -114,28 +135,93 @@ Status Solver::check()
 
 int Solver::propagate()
 {
-  if (mQueue.empty() && decisionLevel() == 0) {
-    // If we are propagating top level, we want to check all clauses
-    mQueue.emplace_back(0);
-  }
-
   while (!mQueue.empty()) {
     int lastAssigned = mQueue.front();
-    const std::vector<int>& clausesToCheck = mWatches[lastAssigned];
+    assert(lastAssigned != 0);
+
+    std::vector<Watch>& watchers = mWatches[lastAssigned];
     mQueue.pop_front();
-    for (int i : clausesToCheck) {
-      const Clause& clause = mClauses[i];
-      auto clauseStatus = checkClause(clause);
-      if (clauseStatus == ClauseStatus::Conflicting) {
-        mQueue.clear();
-        return i;
+    /*
+     1. If the other watched literal is true, do nothing.
+     2. If one of the unwatched literals L′ is not false, restore
+        the invariant by updating the clause so that it watches L′ instead of −L.
+     3. Otherwise, consider the other watched literal L′ in the
+        clause:
+     3.1. If it is not set, propagate L′.
+     3.2. Otherwise, L′ is false, and we have found a conflict.
+    */
+    auto watchIt = watchers.begin();
+    while (watchIt != watchers.end()) {
+      Watch& watch = *watchIt;
+
+      int clauseIndex = watch.clauseIdx;
+      Clause& clause = mClauses[clauseIndex];
+      assert(mVariableState[watch.lit.index()] != Tribool::Unknown);
+
+      Literal& first = clause[0];
+      Literal& second = clause[1];
+
+      if (value(first) == Tribool::True || value(second) == Tribool::True) {
+        // The first watch is true, the clause is satisfied
+        ++watchIt;
+        continue;
       }
 
-      if (clauseStatus == ClauseStatus::Unit) {
-        // The clause is not satisfied but there is one unassigned literal, so we can propagate its value
-        Literal lastLiteral = unassignedLiteral(clause);
-        this->assignUnitClause(lastLiteral, i);
+      assert(lastAssigned == first.index() || lastAssigned == second.index());
+      if (lastAssigned == first.index() && value(first) == Tribool::False) {
+        // Find another watch
+        int newWatchIdx = clause.size();
+        if (clause.size() > 2) {
+          newWatchIdx = 2;
+          while (newWatchIdx < clause.size() && value(clause[newWatchIdx]) != Tribool::Unknown) {
+            newWatchIdx++;
+          }
+        }
+
+        if (newWatchIdx == clause.size()) {
+          if (value(second) == Tribool::Unknown) {
+            // If there is no possible new watch and the second watch is unassigned, it should be propagated.
+            this->assignUnitClause(second, clauseIndex);
+          } else {
+            // The second watch is false and there are no other possible watches, the clause is conflicting.
+            mQueue.clear();
+            return clauseIndex;
+          }
+        } else {
+          Literal watchedLit = clause[newWatchIdx];
+          std::swap(first, clause[newWatchIdx]);
+          watchIt = watchers.erase(watchIt);
+          mWatches[watchedLit.index()].emplace_back(clauseIndex, watchedLit);
+          continue;
+        }
+      } else if (lastAssigned == second.index() && value(second) == Tribool::False) {
+        // Find another watch
+        int newWatchIdx = clause.size();
+        if (clause.size() > 2) {
+          newWatchIdx = 2;
+          while (newWatchIdx < clause.size() && value(clause[newWatchIdx]) != Tribool::Unknown) {
+            newWatchIdx++;
+          }
+        }
+
+        if (newWatchIdx == clause.size()) {
+          if (value(first) == Tribool::Unknown) {
+            // If there is no possible new watch and the second watch is unassigned, it should be propagated.
+            this->assignUnitClause(first, clauseIndex);
+          } else {
+            // The second watch is false and there are no other possible watches, the clause is conflicting.
+            mQueue.clear();
+            return clauseIndex;
+          }
+        } else {
+          Literal watchedLit = clause[newWatchIdx];
+          std::swap(second, clause[newWatchIdx]);
+          watchIt = watchers.erase(watchIt);
+          mWatches[watchedLit.index()].emplace_back(clauseIndex, watchedLit);
+          continue;
+        }
       }
+      ++watchIt;
     }
   }
 
@@ -157,10 +243,9 @@ int Solver::analyzeConflict(int conflictClauseIndex)
 
   mClauses.emplace_back(newClause, true);
   mStats.learnedClauses++;
-  for (Literal lit : newClause) {
-    mWatches[lit.index()].push_back(static_cast<int>(mClauses.size() - 1));
+  if (newClause.size() >= 2) {
+    this->watchClause(mClauses.size() - 1);
   }
-  mWatches[0].push_back(static_cast<int>(mClauses.size() - 1));
 
   // Decay all activities
   for (int i = 1; i < mActivity.size(); ++i) {
@@ -173,42 +258,6 @@ int Solver::analyzeConflict(int conflictClauseIndex)
   }
 
   return backtrackLevel;
-}
-
-std::vector<Literal> Solver::lastUniqueImplicationPointCut(int conflictClauseIndex)
-{
-  // We are performing a last UIP cut, meaning that the reason side will contain the last decision literal and all literals
-  // which were assigned on previous decision levels. The conflict side will contain all implied literals of the current
-  // decision level.
-  Literal lastDecision = mDecisions.back();
-
-  std::vector<Literal> reason;
-  std::vector<Literal> conflict;
-
-  std::ranges::partition_copy(mTrail, std::back_inserter(conflict), std::back_inserter(reason), [this, lastDecision](Literal lit) {
-    return mAssignedAtLevel[lit.index()] == this->decisionLevel() && lastDecision != lit;
-  });
-
-  std::vector<Literal> newClause;
-
-  for (Literal lit : conflict) {
-    std::vector<Literal> preds;
-    fillImplyingPredecessors(lit, preds);
-    for (Literal predecessor : preds) {
-      if (auto it = std::ranges::find(reason, predecessor); it != reason.end()) {
-        newClause.push_back(it->negate());
-      }
-    }
-  }
-
-  // Also add the predecessors of the "conflict" node
-  for (Literal conflictLit : mClauses[conflictClauseIndex]) {
-    if (auto it = std::ranges::find_if(reason, [conflictLit](Literal l) { return l.index() == conflictLit.index();}); it != reason.end()) {
-      newClause.push_back(it->negate());
-    }
-  }
-
-  return newClause;
 }
 
 // Linear time algorithm to find a 1-UIP cut, adapted from the algorithm described in the Minisat paper.
@@ -363,7 +412,7 @@ void Solver::enqueue(Literal literal)
 }
 
 Solver::Solver(const Instance& instance)
-  : mWatches(instance.numVariables() + 1, std::vector<int>{}),
+  : mWatches(instance.numVariables() + 1, std::vector<Watch>{}),
     mVariableState(instance.numVariables() + 1, Tribool::Unknown),
     mActivity(instance.numVariables() + 1, 1.0),
     mImplications(instance.numVariables() + 1, UnknownIndex),
@@ -432,62 +481,73 @@ void Solver::assignUnitClause(Literal literal, int clauseIndex)
   this->enqueue(literal);
 }
 
-bool Solver::simplify()
+void Solver::simplify()
 {
   assert(mDecisions.empty() && "Simplification should only be called on the top level!");
 
-  bool changed = true;
-  while (changed) {
-    changed = false;
-    
-    if (this->propagate() != UnknownIndex) {
-      return false;
-    }
-
-    auto first = std::remove_if(mClauses.begin(), mClauses.end(), [this](const Clause& clause) {
-      // Delete all clauses which are true
-      return std::ranges::any_of(clause, [this](Literal lit) {
-        return mVariableState[lit.index()] == liftBool(lit.value());
-      });
+  auto first = std::remove_if(mClauses.begin(), mClauses.end(), [this](const Clause& clause) {
+    // Delete all clauses which are true
+    return std::ranges::any_of(clause, [this](Literal lit) {
+      return mVariableState[lit.index()] == liftBool(lit.value());
     });
-    long numEliminated = std::distance(first, mClauses.end());
-    mStats.clausesEliminatedBySimplification += numEliminated;
-    mClauses.erase(first, mClauses.end());
-    changed |= numEliminated != 0;
+  });
+  long numEliminated = std::distance(first, mClauses.end());
+  mStats.clausesEliminatedBySimplification += numEliminated;
+  mClauses.erase(first, mClauses.end());
 
-    // Remove all false literals from clauses
-    for (Clause& clause : mClauses) {
-      long numRemoved = clause.remove([this](Literal lit) {
-        Tribool assignedValue = mVariableState[lit.index()];
-        return assignedValue != Tribool::Unknown && liftBool(lit.value()) != assignedValue;
-      });
-      changed |= numRemoved != 0;
-    }
-
-    assert(std::ranges::none_of(mClauses, [](Clause& c) { return c.size() == 0; })
-      && "There should be no empty clauses left after simplification!");
-
-    // Deleting clauses changed clause indices: re-initialize watches and reset the implications graph.
-    this->resetWatches();
-    std::ranges::fill(mImplications, UnknownIndex);
+  // Remove all false literals from clauses
+  for (Clause& clause : mClauses) {
+    long numRemoved = clause.remove([this](Literal lit) {
+      Tribool assignedValue = mVariableState[lit.index()];
+      return assignedValue != Tribool::Unknown && liftBool(lit.value()) != assignedValue;
+    });
   }
 
-  return true;
+  assert(std::ranges::none_of(mClauses, [](Clause& c) { return c.size() == 0; })
+    && "There should be no empty clauses left after simplification!");
+
+  // Deleting clauses changed clause indices: re-initialize watches and reset the implications graph.
+  this->resetWatches();
+  std::ranges::fill(mImplications, UnknownIndex);
 }
 
 void Solver::resetWatches()
 {
-  std::ranges::for_each(mWatches, [](std::vector<int>& v) {
+  std::ranges::for_each(mWatches, [](std::vector<Watch>& v) {
     v.clear();
   });
 
-  mWatches[0].reserve(mClauses.size());
-  for (int i = 0; i < mClauses.size(); ++i) {
-    for (Literal lit : mClauses[i]) {
-      mWatches[lit.index()].push_back(i);
-    }
-    mWatches[0].push_back(i);
+  for (int clauseIdx = 0; clauseIdx < mClauses.size(); ++clauseIdx) {
+    this->watchClause(clauseIdx);
   }
+}
+
+void Solver::watchClause(int clauseIdx)
+{
+  Clause& clause = mClauses[clauseIdx];
+  if (clause.size() < 2) {
+    return;
+  }
+
+  assert(clause.size() >= 2 && "Unit clauses should have been propagated earlier!");
+
+//  int first = 0;
+//  while (first < clause.size() - 1 && mVariableState[clause[first].index()] != Tribool::Unknown) {
+//    first++;
+//  }
+//
+//  int second = first + 1;
+//
+//  assert(second != clause.size() && "No suitable watch for clause!");
+//  while (second < clause.size() - 1 && mVariableState[clause[first].index()] != Tribool::Unknown) {
+//    second++;
+//  }
+//
+//  std::swap(clause[0], clause[first]);
+//  std::swap(clause[1], clause[second]);
+
+  mWatches[clause[0].index()].emplace_back(clauseIdx, clause[0]);
+  mWatches[clause[1].index()].emplace_back(clauseIdx, clause[1]);
 }
 
 int Solver::pickDecisionVariable() const
@@ -507,6 +567,15 @@ int Solver::pickDecisionVariable() const
 
   assert(maxActivityIndex != -1 && "There must be an unassigned index in a valid solver state!");
   return maxActivityIndex;
+}
+
+Tribool Solver::value(Literal literal)
+{
+  if (mVariableState[literal.index()] == Tribool::Unknown) {
+    return Tribool::Unknown;
+  }
+
+  return liftBool(mVariableState[literal.index()] == liftBool(literal.value()));
 }
 
 std::vector<bool> Instance::model() const
