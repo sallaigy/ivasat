@@ -21,33 +21,6 @@ Status Instance::check()
   return status;
 }
 
-Solver::ClauseStatus Solver::checkClause(const Clause& clause)
-{
-  ClauseStatus status = ClauseStatus::Conflicting;
-
-  for (Literal literal : clause) {
-    Tribool variableValue = Tribool::Unknown;
-    if (mVariableState[literal.index()] == Tribool::Unknown) {
-      if (status == ClauseStatus::Unit || status == ClauseStatus::Unresolved) {
-        status = ClauseStatus::Unresolved;
-        continue;
-      } else {
-        status = ClauseStatus::Unit;
-        continue;
-      }
-    } else {
-      variableValue = mVariableState[literal.index()];
-      variableValue = literal.isNegated() ? ~variableValue : variableValue;
-    }
-
-    if (variableValue == Tribool::True) {
-      return ClauseStatus::Satisfied;
-    }
-  }
-
-  return status;
-}
-
 bool Solver::preprocess()
 {
   // Order clauses by size
@@ -153,73 +126,43 @@ int Solver::propagate()
     auto watchIt = watchers.begin();
     while (watchIt != watchers.end()) {
       Watch& watch = *watchIt;
-
       int clauseIndex = watch.clauseIdx;
       Clause& clause = mClauses[clauseIndex];
-      assert(mVariableState[watch.lit.index()] != Tribool::Unknown);
 
-      Literal& first = clause[0];
-      Literal& second = clause[1];
+      int watchIndex = clause[0].index() == lastAssigned ? 0 : 1;
+      assert(mVariableState[clause[watchIndex].index()] != Tribool::Unknown);
 
-      if (value(first) == Tribool::True || value(second) == Tribool::True) {
-        // The first watch is true, the clause is satisfied
+      Literal& watchLit = clause[watchIndex];
+      Literal& otherWatch = clause[watchIndex == 0 ? 1 : 0];
+
+      if (value(watchLit) == Tribool::True || value(otherWatch) == Tribool::True) {
+        // Watch is true, the clause is satisfied
         ++watchIt;
         continue;
       }
 
-      assert(lastAssigned == first.index() || lastAssigned == second.index());
-      if (lastAssigned == first.index() && value(first) == Tribool::False) {
-        // Find another watch
-        int newWatchIdx = clause.size();
-        if (clause.size() > 2) {
-          newWatchIdx = 2;
-          while (newWatchIdx < clause.size() && value(clause[newWatchIdx]) != Tribool::Unknown) {
-            newWatchIdx++;
-          }
-        }
+      // Find another non-false literal to watch
+      int newWatchIndex = 2;
+      while (newWatchIndex < clause.size() && value(clause[newWatchIndex]) == Tribool::False) {
+        newWatchIndex++;
+      }
 
-        if (newWatchIdx == clause.size()) {
-          if (value(second) == Tribool::Unknown) {
-            // If there is no possible new watch and the second watch is unassigned, it should be propagated.
-            this->assignUnitClause(second, clauseIndex);
-          } else {
-            // The second watch is false and there are no other possible watches, the clause is conflicting.
-            mQueue.clear();
-            return clauseIndex;
-          }
+      if (newWatchIndex == clause.size()) {
+        // All other watches are false, try to propagate
+        if (value(otherWatch) == Tribool::Unknown) {
+          this->assignUnitClause(otherWatch, clauseIndex);
         } else {
-          Literal watchedLit = clause[newWatchIdx];
-          std::swap(first, clause[newWatchIdx]);
-          watchIt = watchers.erase(watchIt);
-          mWatches[watchedLit.index()].emplace_back(clauseIndex, watchedLit);
-          continue;
+          // The second watch is false and there are no other possible matches, we found a conflict.
+          mQueue.clear();
+          return clauseIndex;
         }
-      } else if (lastAssigned == second.index() && value(second) == Tribool::False) {
-        // Find another watch
-        int newWatchIdx = clause.size();
-        if (clause.size() > 2) {
-          newWatchIdx = 2;
-          while (newWatchIdx < clause.size() && value(clause[newWatchIdx]) != Tribool::Unknown) {
-            newWatchIdx++;
-          }
-        }
-
-        if (newWatchIdx == clause.size()) {
-          if (value(first) == Tribool::Unknown) {
-            // If there is no possible new watch and the second watch is unassigned, it should be propagated.
-            this->assignUnitClause(first, clauseIndex);
-          } else {
-            // The second watch is false and there are no other possible watches, the clause is conflicting.
-            mQueue.clear();
-            return clauseIndex;
-          }
-        } else {
-          Literal watchedLit = clause[newWatchIdx];
-          std::swap(second, clause[newWatchIdx]);
-          watchIt = watchers.erase(watchIt);
-          mWatches[watchedLit.index()].emplace_back(clauseIndex, watchedLit);
-          continue;
-        }
+      } else {
+        // Use the new watch instead of the current one.
+        Literal newWatch = clause[newWatchIndex];
+        std::swap(watchLit, clause[newWatchIndex]);
+        watchIt = watchers.erase(watchIt);
+        mWatches[newWatch.index()].emplace_back(clauseIndex, newWatch);
+        continue;
       }
       ++watchIt;
     }
@@ -530,21 +473,6 @@ void Solver::watchClause(int clauseIdx)
   }
 
   assert(clause.size() >= 2 && "Unit clauses should have been propagated earlier!");
-
-//  int first = 0;
-//  while (first < clause.size() - 1 && mVariableState[clause[first].index()] != Tribool::Unknown) {
-//    first++;
-//  }
-//
-//  int second = first + 1;
-//
-//  assert(second != clause.size() && "No suitable watch for clause!");
-//  while (second < clause.size() - 1 && mVariableState[clause[first].index()] != Tribool::Unknown) {
-//    second++;
-//  }
-//
-//  std::swap(clause[0], clause[first]);
-//  std::swap(clause[1], clause[second]);
 
   mWatches[clause[0].index()].emplace_back(clauseIdx, clause[0]);
   mWatches[clause[1].index()].emplace_back(clauseIdx, clause[1]);

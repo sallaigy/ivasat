@@ -211,8 +211,6 @@ private:
 
   int propagate();
 
-  ClauseStatus checkClause(const Clause& clause);
-
   Literal unassignedLiteral(const Clause& clause)
   {
     for (Literal literal : clause) {
