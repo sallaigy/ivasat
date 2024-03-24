@@ -151,6 +151,8 @@ class Solver
 
   struct Statistics
   {
+    unsigned variables = 0;
+    unsigned clauses = 0;
     unsigned decisions = 0;
     unsigned checkedFullCombinations = 0;
     unsigned propagations = 0;

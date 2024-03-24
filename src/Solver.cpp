@@ -114,18 +114,10 @@ int Solver::propagate()
 
     std::vector<Watch>& watchers = mWatches[lastAssigned];
     mQueue.pop_front();
-    /*
-     1. If the other watched literal is true, do nothing.
-     2. If one of the unwatched literals L′ is not false, restore
-        the invariant by updating the clause so that it watches L′ instead of −L.
-     3. Otherwise, consider the other watched literal L′ in the
-        clause:
-     3.1. If it is not set, propagate L′.
-     3.2. Otherwise, L′ is false, and we have found a conflict.
-    */
+
     auto watchIt = watchers.begin();
     while (watchIt != watchers.end()) {
-      Watch& watch = *watchIt;
+      const Watch& watch = *watchIt;
       int clauseIndex = watch.clauseIdx;
       Clause& clause = mClauses[clauseIndex];
 
@@ -133,7 +125,7 @@ int Solver::propagate()
       assert(mVariableState[clause[watchIndex].index()] != Tribool::Unknown);
 
       Literal& watchLit = clause[watchIndex];
-      Literal& otherWatch = clause[watchIndex == 0 ? 1 : 0];
+      const Literal& otherWatch = clause[watchIndex == 0 ? 1 : 0];
 
       if (value(watchLit) == Tribool::True || value(otherWatch) == Tribool::True) {
         // Watch is true, the clause is satisfied
@@ -285,7 +277,7 @@ void Solver::fillImplyingPredecessors(Literal lit, std::vector<Literal>& result)
     return;
   }
 
-  Clause& implyingClause = mClauses[impliedByClause];
+  const Clause& implyingClause = mClauses[impliedByClause];
 
   for (Literal clauseLit : implyingClause) {
     if (clauseLit.index() != literalIndex) {
@@ -369,6 +361,8 @@ Solver::Solver(const Instance& instance)
     }
     mClauses.emplace_back(literals);
   }
+  mStats.variables = instance.numVariables();
+  mStats.clauses = instance.clauses().size();
 }
 
 void Solver::popDecision()
@@ -426,6 +420,7 @@ void Solver::assignUnitClause(Literal literal, int clauseIndex)
 
 void Solver::simplify()
 {
+  bool changed = false;
   assert(mDecisions.empty() && "Simplification should only be called on the top level!");
 
   auto first = std::remove_if(mClauses.begin(), mClauses.end(), [this](const Clause& clause) {
@@ -438,20 +433,25 @@ void Solver::simplify()
   mStats.clausesEliminatedBySimplification += numEliminated;
   mClauses.erase(first, mClauses.end());
 
+  changed = numEliminated != 0;
+
   // Remove all false literals from clauses
   for (Clause& clause : mClauses) {
-    long numRemoved = clause.remove([this](Literal lit) {
+    long numDeleted = clause.remove([this](Literal lit) {
       Tribool assignedValue = mVariableState[lit.index()];
       return assignedValue != Tribool::Unknown && liftBool(lit.value()) != assignedValue;
     });
+    changed |= numDeleted != 0;
   }
 
   assert(std::ranges::none_of(mClauses, [](Clause& c) { return c.size() == 0; })
     && "There should be no empty clauses left after simplification!");
 
   // Deleting clauses changed clause indices: re-initialize watches and reset the implications graph.
-  this->resetWatches();
-  std::ranges::fill(mImplications, UnknownIndex);
+  if (changed) {
+    this->resetWatches();
+    std::ranges::fill(mImplications, UnknownIndex);
+  }
 }
 
 void Solver::resetWatches()
