@@ -69,6 +69,11 @@ public:
   Clause(const Clause&) = default;
   Clause& operator=(const Clause&) = default;
 
+  Literal& operator[](int index)
+  {
+    return mLiterals[index];
+  }
+
   const Literal& operator[](int index) const
   {
     return mLiterals[index];
@@ -146,6 +151,8 @@ class Solver
 
   struct Statistics
   {
+    unsigned variables = 0;
+    unsigned clauses = 0;
     unsigned decisions = 0;
     unsigned checkedFullCombinations = 0;
     unsigned propagations = 0;
@@ -154,6 +161,12 @@ class Solver
     unsigned restarts = 0;
     unsigned conflicts = 0;
     unsigned pureLiterals = 0;
+  };
+
+  struct Watch
+  {
+    int clauseIdx;
+    Literal lit;
   };
 
   static constexpr int UnknownIndex = -1;
@@ -172,11 +185,10 @@ public:
   // Solver implementation
   //==---------------------------------------------------------------------==//
 private:
-  /// Simplify the clause database, propagating unit clauses and removing propagated values.
-  /// \return False if the simplified clause database contains an empty clause, otherwise true.
-  [[nodiscard]] bool simplify();
+  /// Simplify the clause database, removing false literals and true clauses.
+  void simplify();
 
-  void preprocess();
+  bool preprocess();
 
   void resetWatches();
 
@@ -201,8 +213,6 @@ private:
 
   int propagate();
 
-  ClauseStatus checkClause(const Clause& clause);
-
   Literal unassignedLiteral(const Clause& clause)
   {
     for (Literal literal : clause) {
@@ -216,10 +226,7 @@ private:
     return Literal{0};
   }
 
-  void enqueue(int index)
-  {
-    mQueue.emplace_back(index);
-  }
+  void enqueue(Literal literal);
 
   // Clause learning
   //==---------------------------------------------------------------------==//
@@ -262,7 +269,7 @@ private:
 
   // Clause database
   std::vector<Clause> mClauses;
-  std::vector<std::vector<int>> mWatches;
+  std::vector<std::vector<Watch>> mWatches;
 
   // Internal solver state
   std::vector<Tribool> mVariableState;
@@ -286,6 +293,10 @@ private:
   unsigned mRestartsSinceLastSimplify = std::numeric_limits<unsigned>::max();
 
   Statistics mStats;
+
+  void watchClause(int clause);
+
+  Tribool value(Literal literal);
 };
 
 

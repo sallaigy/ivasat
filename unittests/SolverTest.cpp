@@ -360,3 +360,63 @@ p cnf 12 11
 
   EXPECT_TRUE(assertSat(*inst, Status::Unsat));
 }
+
+TEST(SolverTest, two_watched_literals_list_index_error_regression)
+{
+  std::stringstream ss(R"(
+p cnf 9 9
+-1 -4 0
+-1 -3 0
+4 9 0
+-2 3 5 0
+-5 -9 0
+2 6 0
+-8 -9 0
+7 8 0
+-6 -7 0
+)");
+  auto inst = parseDimacs(ss);
+
+  EXPECT_TRUE(assertSat(*inst, Status::Sat));
+}
+
+TEST(SolverTest, two_watched_literals_wrong_unsat_regression)
+{
+  std::stringstream ss(R"(
+p cnf 6 6
+-3 4 0
+-2 -3 -4 0
+-2 3 -5 0
+5 -6 0
+-1 5 6 0
+1 6 0
+)");
+  auto inst = parseDimacs(ss);
+
+  EXPECT_TRUE(assertSat(*inst, Status::Sat));
+}
+
+TEST(SolverTest, two_watched_literals_wrong_unsat_regression2)
+{
+  std::stringstream ss(R"(
+p cnf 15 15
+2 3 0
+-2 3 0
+-3 7 0
+-7 10 0
+-10 -15 0
+-12 15 0
+-5 15 0
+4 5 12 0
+-4 -6 0
+6 13 0
+-9 -13 0
+9 14 0
+-8 -14 0
+8 -11 0
+-1 11 0
+)");
+  auto inst = parseDimacs(ss);
+
+  EXPECT_TRUE(assertSat(*inst, Status::Sat));
+}

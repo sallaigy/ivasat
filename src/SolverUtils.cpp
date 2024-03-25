@@ -37,6 +37,8 @@ std::ostream& ivasat::operator<<(std::ostream& os, Status status)
 
 void Solver::dumpStats(std::ostream& os) const
 {
+  os << "Variables: " << mStats.variables << "\n";
+  os << "Clauses: " << mStats.clauses << "\n";
   os << "Decisions: " << mStats.decisions << "\n";
   os << "Conflicts: " << mStats.conflicts << "\n";
   os << "Learned clauses: " << mStats.learnedClauses << "\n";
