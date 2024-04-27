@@ -75,6 +75,8 @@ Status Solver::check()
     return Status::Unsat;
   }
 
+  int origClausesSize = mClauses.size();
+
   // Start search
   while (true) {
     int conflictClause = this->propagate();
@@ -86,9 +88,20 @@ Status Solver::check()
       }
 
       // We reached a conflict, perform backtracking
-      int backtrackLevel = this->analyzeConflict(conflictClause);
+      std::vector<Literal> newClause;
+      int backtrackLevel = this->analyzeConflict(conflictClause, newClause);
       this->popDecisionUntil(backtrackLevel);
-      this->assignUnitClause(mClauses.back().back(), mClauses.size() - 1);
+
+      if (newClause.size() == 1) {
+        this->enqueue(newClause.back());
+      } else if (newClause.size() >= 2) {
+        Clause& clause = mClauses.emplace_back(newClause, true);
+        clause.bumpActivity();
+        mStats.learnedClauses++;
+        mNumLearnedClauses++;
+        this->watchClause(mClauses.size() - 1);
+        this->assignUnitClause(newClause.back(), mClauses.size() - 1);
+      }
     } else {
       // Is this a complete state?
       if (numAssigned() == mVariableState.size() - 1) {
@@ -97,6 +110,10 @@ Status Solver::check()
 
       if (decisionLevel() == 0) {
         this->simplify();
+      }
+
+      if (mNumLearnedClauses >= origClausesSize * 3) {
+        this->reduce();
       }
 
       int decisionVariable = pickDecisionVariable();
@@ -120,6 +137,11 @@ int Solver::propagate()
       const Watch& watch = *watchIt;
       int clauseIndex = watch.clauseIdx;
       Clause& clause = mClauses[clauseIndex];
+
+      if (clause.isGarbage()) {
+        watchIt = watchers.erase(watchIt);
+        continue;
+      }
 
       int watchIndex = clause[0].index() == lastAssigned ? 0 : 1;
       assert(mVariableState[clause[watchIndex].index()] != Tribool::Unknown);
@@ -163,7 +185,7 @@ int Solver::propagate()
   return UnknownIndex;
 }
 
-int Solver::analyzeConflict(int conflictClauseIndex)
+int Solver::analyzeConflict(int conflictClauseIndex, std::vector<Literal>& newClause)
 {
   // Find a cut of the implication graph through a unique implication point (UIP).
   // The UIP is a node at decision level `d` such that every path from the decision variable at level `d` to the
@@ -172,27 +194,40 @@ int Solver::analyzeConflict(int conflictClauseIndex)
   // A cut for a UIP `l` is a pair (A,B) where
   //  - B contains all successors of `l` where there is a path to the conflict node
   //  - A contains all the rest of nodes
-
-  std::vector<Literal> newClause;
+  newClause.clear();
   int backtrackLevel = this->firstUniqueImplicationPointCut(conflictClauseIndex, newClause);
 
-  mClauses.emplace_back(newClause, true);
-  mStats.learnedClauses++;
-  if (newClause.size() >= 2) {
-    this->watchClause(mClauses.size() - 1);
-  }
-
   // Decay all activities
-  for (int i = 1; i < mActivity.size(); ++i) {
-    mActivity[i] *= DefaultActivityDecay;
-  }
+  this->decayVariableActivities();
+  this->decayClauseActivities();
 
   // Bump activity of related variables
+  this->bumpVariableActivity(newClause);
+
+  return backtrackLevel;
+}
+
+void Solver::bumpVariableActivity(std::vector<Literal>& newClause)
+{
   for (Literal lit : newClause) {
     mActivity[lit.index()] += 1;
   }
+}
 
-  return backtrackLevel;
+void Solver::decayVariableActivities()
+{
+  for (int i = 1; i < mActivity.size(); ++i) {
+    mActivity[i] *= DefaultActivityDecay;
+  }
+}
+
+void Solver::decayClauseActivities()
+{
+  for (Clause& clause : mClauses) {
+    if (!clause.isGarbage()) {
+      clause.decayActivity(DefaultActivityDecay);
+    }
+  }
 }
 
 // Linear time algorithm to find a 1-UIP cut, adapted from the algorithm described in the Minisat paper.
@@ -286,35 +321,6 @@ void Solver::fillImplyingPredecessors(Literal lit, std::vector<Literal>& result)
   }
 }
 
-int Solver::backtrack()
-{
-  // We learned a new clause, check the backtracking level
-  const Clause& learnedClause = mClauses.back();
-  if (learnedClause.size() == 1) {
-    // If a unit clause is learned, we want to jump back to the top level and propagate it.
-    this->popDecisionUntil(0);
-    return learnedClause.back().index();
-  }
-
-  // Determine the backtrack level: this should be the second-largest decision level of the literals in the learned clause.
-  int backtrackLevel = -1;
-
-  for (Literal lit: learnedClause) {
-    if (lit.index() != mDecisions.back().index()) {
-      int assignmentLevel = mAssignedAtLevel[lit.index()];
-      if (backtrackLevel < assignmentLevel) {
-        backtrackLevel = assignmentLevel;
-      }
-    }
-  }
-
-  if (backtrackLevel != -1) {
-    this->popDecisionUntil(backtrackLevel - 1);
-  }
-
-  return learnedClause.back().index();
-}
-
 std::vector<bool> Solver::model() const
 {
   std::vector<bool> result;
@@ -394,6 +400,10 @@ void Solver::popDecisionUntil(int level)
 void Solver::undoAssignment(size_t variableIndex)
 {
   assert(mVariableState[variableIndex] != Tribool::Unknown && "Cannot undo an assignment that did not take place");
+  if (mImplications[variableIndex] != UnknownIndex) {
+    Clause& clause = mClauses[mImplications[variableIndex]];
+    clause.unlock();
+  }
 
   mVariableState[variableIndex] = Tribool::Unknown;
   mAssignedAtLevel[variableIndex] = UnknownIndex;
@@ -414,6 +424,7 @@ void Solver::assignUnitClause(Literal literal, int clauseIndex)
   int variableIndex = literal.index();
   assert(mImplications[variableIndex] == UnknownIndex && "No implications should exists for a freshly assigned unit clause");
 
+  mClauses[clauseIndex].lock();
   mImplications[variableIndex] = clauseIndex;
   this->enqueue(literal);
 }
@@ -421,17 +432,26 @@ void Solver::assignUnitClause(Literal literal, int clauseIndex)
 void Solver::simplify()
 {
   bool changed = false;
+  long numEliminated = 0;
   assert(mDecisions.empty() && "Simplification should only be called on the top level!");
 
-  auto first = std::remove_if(mClauses.begin(), mClauses.end(), [this](const Clause& clause) {
-    // Delete all clauses which are true
-    return std::ranges::any_of(clause, [this](Literal lit) {
+  auto [first, last] = std::ranges::remove_if(mClauses, [this, &numEliminated](const Clause& clause) {
+    // Delete all clauses which are true and marked as garbage
+    if (clause.isGarbage()) {
+      return true;
+    }
+
+    bool isTrueClause = std::ranges::any_of(clause, [this](Literal lit) {
       return mVariableState[lit.index()] == liftBool(lit.value());
     });
+    if (isTrueClause) {
+      numEliminated++;
+    }
+
+    return isTrueClause;
   });
-  long numEliminated = std::distance(first, mClauses.end());
+  mClauses.erase(first, last);
   mStats.clausesEliminatedBySimplification += numEliminated;
-  mClauses.erase(first, mClauses.end());
 
   changed = numEliminated != 0;
 
@@ -452,6 +472,31 @@ void Solver::simplify()
     this->resetWatches();
     std::ranges::fill(mImplications, UnknownIndex);
   }
+}
+
+void Solver::reduce()
+{
+  std::vector<Clause*> learnedClauses;
+  for (Clause& clause : mClauses) {
+    if (clause.isLearned() && !clause.isLocked() && !clause.isGarbage() && clause.size() > 2) {
+      learnedClauses.push_back(&clause);
+    }
+  }
+
+  std::ranges::sort(learnedClauses, [](const Clause* a, const Clause* b) {
+    return a->activity() < b->activity();
+  });
+
+  unsigned numRemoved = 0;
+  for (int i = 0; i < learnedClauses.size() / 2; ++i) {
+    Clause* clause = learnedClauses[i];
+    clause->markAsGarbage();
+    numRemoved++;
+  }
+
+  mStats.clausesEliminatedByReduce += numRemoved;
+
+  mNumLearnedClauses -= numRemoved;
 }
 
 void Solver::resetWatches()
