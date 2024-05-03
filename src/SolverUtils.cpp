@@ -45,6 +45,7 @@ void Solver::dumpStats(std::ostream& os) const
   os << "Propagations: " << mStats.propagations << "\n";
   os << "Restarts: " << mStats.restarts << "\n";
   os << "Clauses eliminated by simplification: " << mStats.clausesEliminatedBySimplification << "\n";
+  os << "Clauses eliminated by activity heuristic: " << mStats.clausesEliminatedByReduce << "\n";
   os << "Pure literals found: " << mStats.pureLiterals << "\n";
 }
 

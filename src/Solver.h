@@ -120,9 +120,52 @@ public:
     return numRemoved;
   }
 
+  double activity() const
+  {
+    return mActivity;
+  }
+
+  void bumpActivity()
+  {
+    mActivity += 1;
+  }
+
+  void decayActivity(double factor)
+  {
+    mActivity *= factor;
+  }
+
+  bool isLocked() const
+  {
+    return mIsLocked;
+  }
+
+  void lock()
+  {
+    mIsLocked = true;
+  }
+
+  void unlock()
+  {
+    mIsLocked = false;
+  }
+
+  void markAsGarbage()
+  {
+    mIsGarbage = true;
+  }
+
+  bool isGarbage() const
+  {
+    return mIsGarbage;
+  }
+
 private:
   std::vector<Literal> mLiterals;
   bool mIsLearned;
+  bool mIsGarbage = false;
+  bool mIsLocked = false;
+  double mActivity = 1.0;
 };
 
 enum class Tribool
@@ -161,6 +204,7 @@ class Solver
     unsigned restarts = 0;
     unsigned conflicts = 0;
     unsigned pureLiterals = 0;
+    unsigned int clausesEliminatedByReduce = 0;
   };
 
   struct Watch
@@ -188,6 +232,9 @@ private:
   /// Simplify the clause database, removing false literals and true clauses.
   void simplify();
 
+  /// Reduce the clause database, remove old learned clauses
+  void reduce();
+
   bool preprocess();
 
   void resetWatches();
@@ -208,30 +255,29 @@ private:
   /// Pop decisions until `level`.
   void popDecisionUntil(int level);
 
+  void watchClause(int clause);
+
+  Tribool value(Literal literal);
+
   // Unit propagation
   //==---------------------------------------------------------------------==//
 
   int propagate();
 
-  Literal unassignedLiteral(const Clause& clause)
-  {
-    for (Literal literal : clause) {
-      auto currentValue = mVariableState[literal.index()];
-      if (currentValue == Tribool::Unknown) {
-        return literal;
-      }
-    }
-
-    assert(false && "Should be unreachable!");
-    return Literal{0};
-  }
-
   void enqueue(Literal literal);
+
+  // Heuristics
+  //==---------------------------------------------------------------------==//
+
+  void decayVariableActivities();
+  void bumpVariableActivity(std::vector<Literal>& newClause);
+
+  void decayClauseActivities();
 
   // Clause learning
   //==---------------------------------------------------------------------==//
 
-  int analyzeConflict(int conflictClauseIndex);
+  int analyzeConflict(int conflictClauseIndex, std::vector<Literal>& newClause);
 
   [[nodiscard]] std::vector<Literal> lastUniqueImplicationPointCut(int conflictClauseIndex);
   [[nodiscard]] int firstUniqueImplicationPointCut(int conflictClauseIndex, std::vector<Literal>& newClause);
@@ -254,8 +300,6 @@ private:
   }
 
   int pickDecisionVariable() const;
-
-  int backtrack();
 
   // Debug methods
   //==----------------------------------------------------------------------==//
@@ -291,12 +335,9 @@ private:
 
   // Heuristics
   unsigned mRestartsSinceLastSimplify = std::numeric_limits<unsigned>::max();
+  unsigned mNumLearnedClauses = 0;
 
   Statistics mStats;
-
-  void watchClause(int clause);
-
-  Tribool value(Literal literal);
 };
 
 
